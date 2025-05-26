@@ -4,14 +4,34 @@
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use serde::{Deserializer, Serializer};
+use serde_with::{base64::Base64, serde_as, DeserializeAs, SerializeAs};
+
+/// Helper for serializing/deserializing Bytes as Vec<u8>
+struct BytesAsVec;
+
+impl SerializeAs<Bytes> for BytesAsVec {
+    fn serialize_as<S>(source: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        source.to_vec().serialize(serializer)
+    }
+}
+
+impl<'de> DeserializeAs<'de, Bytes> for BytesAsVec {
+    fn deserialize_as<D>(deserializer: D) -> Result<Bytes, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer).map(Bytes::from)
+    }
+}
 
 /// A JSON message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonMessage {
     /// The JSON message payload
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<serde_json::Value>,
+    pub message: serde_json::Value,
 
     /// The message context
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,56 +39,16 @@ pub struct JsonMessage {
 }
 
 /// A binary message
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryMessage {
     /// The binary message payload
-    pub message: Option<Bytes>,
+    #[serde_as(as = "Base64")]
+    pub message: Bytes,
 
     /// The message context
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<MessageContext>,
-}
-
-// Implement custom serialization for BinaryMessage
-impl Serialize for BinaryMessage {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("BinaryMessage", 2)?;
-
-        if let Some(message) = &self.message {
-            let vec = message.to_vec();
-            state.serialize_field("message", &vec)?;
-        }
-
-        if let Some(context) = &self.context {
-            state.serialize_field("context", context)?;
-        }
-
-        state.end()
-    }
-}
-
-// Implement custom deserialization for BinaryMessage
-impl<'de> Deserialize<'de> for BinaryMessage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            message: Option<Vec<u8>>,
-            context: Option<MessageContext>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-
-        Ok(BinaryMessage {
-            message: helper.message.map(Bytes::from),
-            context: helper.context,
-        })
-    }
 }
 
 /// Context information for a message
@@ -81,29 +61,25 @@ pub struct MessageContext {
 
 /// A message to publish
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublishMessage {
-    /// The JSON message to publish
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub json_message: Option<JsonMessage>,
+pub enum Message {
+    /// A JSON message to publish
+    #[serde(rename = "jsonMessage")]
+    Json(JsonMessage),
 
-    /// The binary message to publish
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub binary_message: Option<BinaryMessage>,
+    /// A binary message to publish
+    #[serde(rename = "binaryMessage")]
+    Binary(BinaryMessage),
 }
 
 /// A response from a subscription operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionResponseMessage {
-    /// The JSON message that was received
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub json_message: Option<JsonMessage>,
-
-    /// The binary message that was received
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub binary_message: Option<BinaryMessage>,
+    /// The message that was received
+    #[serde(flatten)]
+    pub message: Message,
 
     /// The name of the topic (deprecated - use context instead)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "topicName", skip_serializing_if = "Option::is_none")]
     pub topic_name: Option<String>,
 }
 
@@ -129,10 +105,12 @@ impl Default for ReceiveMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishToTopicRequest {
     /// The topic to publish to
+    #[serde(rename = "topic")]
     pub topic: String,
 
     /// The message to publish
-    pub publish_message: PublishMessage,
+    #[serde(rename = "publishMessage")]
+    pub publish_message: Message,
 }
 
 /// Response to a publish to topic request
@@ -146,7 +124,7 @@ pub struct SubscribeToTopicRequest {
     pub topic: String,
 
     /// The receive mode
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "receiveMode", skip_serializing_if = "Option::is_none")]
     pub receive_mode: Option<ReceiveMode>,
 }
 
@@ -155,104 +133,43 @@ pub struct SubscribeToTopicRequest {
 pub struct SubscribeToTopicResponse {}
 
 /// Request to publish to IoT Core MQTT
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishToIoTCoreRequest {
     /// The topic to publish to
+    #[serde(rename = "topicName")]
     pub topic_name: String,
 
     /// The QoS to use
     pub qos: QoS,
 
     /// The payload to publish
+    #[serde_as(as = "BytesAsVec")]
     pub payload: Bytes,
 
     /// The user properties to include in the publish
+    #[serde(rename = "userProperties", skip_serializing_if = "Option::is_none")]
     pub user_properties: Option<Vec<UserProperty>>,
 
     /// The message expiry interval in seconds
+    #[serde(
+        rename = "messageExpiryIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub message_expiry_interval_seconds: Option<u32>,
 
     /// The correlation data
+    #[serde_as(as = "Option<BytesAsVec>")]
+    #[serde(rename = "correlationData", skip_serializing_if = "Option::is_none")]
     pub correlation_data: Option<Bytes>,
 
     /// The response topic
+    #[serde(rename = "responseTopic", skip_serializing_if = "Option::is_none")]
     pub response_topic: Option<String>,
 
     /// The content type
+    #[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-}
-
-// Implement custom serialization for PublishToIoTCoreRequest
-impl Serialize for PublishToIoTCoreRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("PublishToIoTCoreRequest", 8)?;
-
-        state.serialize_field("topic_name", &self.topic_name)?;
-        state.serialize_field("qos", &self.qos)?;
-
-        let payload_vec = self.payload.to_vec();
-        state.serialize_field("payload", &payload_vec)?;
-
-        if let Some(props) = &self.user_properties {
-            state.serialize_field("user_properties", props)?;
-        }
-
-        if let Some(expiry) = &self.message_expiry_interval_seconds {
-            state.serialize_field("message_expiry_interval_seconds", expiry)?;
-        }
-
-        if let Some(data) = &self.correlation_data {
-            let data_vec = data.to_vec();
-            state.serialize_field("correlation_data", &data_vec)?;
-        }
-
-        if let Some(topic) = &self.response_topic {
-            state.serialize_field("response_topic", topic)?;
-        }
-
-        if let Some(content_type) = &self.content_type {
-            state.serialize_field("content_type", content_type)?;
-        }
-
-        state.end()
-    }
-}
-
-// Implement custom deserialization for PublishToIoTCoreRequest
-impl<'de> Deserialize<'de> for PublishToIoTCoreRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            topic_name: String,
-            qos: QoS,
-            payload: Vec<u8>,
-            user_properties: Option<Vec<UserProperty>>,
-            message_expiry_interval_seconds: Option<u32>,
-            correlation_data: Option<Vec<u8>>,
-            response_topic: Option<String>,
-            content_type: Option<String>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-
-        Ok(PublishToIoTCoreRequest {
-            topic_name: helper.topic_name,
-            qos: helper.qos,
-            payload: Bytes::from(helper.payload),
-            user_properties: helper.user_properties,
-            message_expiry_interval_seconds: helper.message_expiry_interval_seconds,
-            correlation_data: helper.correlation_data.map(Bytes::from),
-            response_topic: helper.response_topic,
-            content_type: helper.content_type,
-        })
-    }
 }
 
 /// Response to a publish to IoT Core MQTT request
@@ -263,6 +180,7 @@ pub struct PublishToIoTCoreResponse {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscribeToIoTCoreRequest {
     /// The topic filter to subscribe to
+    #[serde(rename = "topicName")]
     pub topic_name: String,
 
     /// The QoS to use
@@ -281,98 +199,40 @@ pub struct IoTCoreMessage {
 }
 
 /// An MQTT message
-#[derive(Debug, Clone)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MqttMessage {
     /// The topic name
+    #[serde(rename = "topicName")]
     pub topic_name: String,
 
     /// The payload
+    #[serde_as(as = "BytesAsVec")]
     pub payload: Bytes,
 
     /// The user properties
+    #[serde(rename = "userProperties", skip_serializing_if = "Option::is_none")]
     pub user_properties: Option<Vec<UserProperty>>,
 
     /// The message expiry interval in seconds
+    #[serde(
+        rename = "messageExpiryIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub message_expiry_interval_seconds: Option<u32>,
 
     /// The correlation data
+    #[serde_as(as = "Option<BytesAsVec>")]
+    #[serde(rename = "correlationData", skip_serializing_if = "Option::is_none")]
     pub correlation_data: Option<Bytes>,
 
     /// The response topic
+    #[serde(rename = "responseTopic", skip_serializing_if = "Option::is_none")]
     pub response_topic: Option<String>,
 
     /// The content type
+    #[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
-}
-
-// Implement custom serialization for MqttMessage
-impl Serialize for MqttMessage {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("MqttMessage", 7)?;
-
-        state.serialize_field("topic_name", &self.topic_name)?;
-
-        let payload_vec = self.payload.to_vec();
-        state.serialize_field("payload", &payload_vec)?;
-
-        if let Some(props) = &self.user_properties {
-            state.serialize_field("user_properties", props)?;
-        }
-
-        if let Some(expiry) = &self.message_expiry_interval_seconds {
-            state.serialize_field("message_expiry_interval_seconds", expiry)?;
-        }
-
-        if let Some(data) = &self.correlation_data {
-            let data_vec = data.to_vec();
-            state.serialize_field("correlation_data", &data_vec)?;
-        }
-
-        if let Some(topic) = &self.response_topic {
-            state.serialize_field("response_topic", topic)?;
-        }
-
-        if let Some(content_type) = &self.content_type {
-            state.serialize_field("content_type", content_type)?;
-        }
-
-        state.end()
-    }
-}
-
-// Implement custom deserialization for MqttMessage
-impl<'de> Deserialize<'de> for MqttMessage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            topic_name: String,
-            payload: Vec<u8>,
-            user_properties: Option<Vec<UserProperty>>,
-            message_expiry_interval_seconds: Option<u32>,
-            correlation_data: Option<Vec<u8>>,
-            response_topic: Option<String>,
-            content_type: Option<String>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-
-        Ok(MqttMessage {
-            topic_name: helper.topic_name,
-            payload: Bytes::from(helper.payload),
-            user_properties: helper.user_properties,
-            message_expiry_interval_seconds: helper.message_expiry_interval_seconds,
-            correlation_data: helper.correlation_data.map(Bytes::from),
-            response_topic: helper.response_topic,
-            content_type: helper.content_type,
-        })
-    }
 }
 
 /// MQTT QoS level
@@ -403,47 +263,114 @@ pub struct UserProperty {
     pub value: String,
 }
 
-/// Message type for a Greengrass IPC message
-pub enum Message {
-    /// A JSON message
-    Json(JsonMessage),
-
-    /// A binary message
-    Binary(BinaryMessage),
-}
-
 impl Message {
     /// Create a new JSON message
-    pub fn json<V: Into<serde_json::Value>>(value: V) -> Self {
-        Self::Json(JsonMessage {
-            message: Some(value.into()),
+    pub fn json(message: serde_json::Value) -> Self {
+        Message::Json(JsonMessage {
+            message,
             context: None,
         })
     }
 
     /// Create a new binary message
-    pub fn binary<B: Into<Bytes>>(data: B) -> Self {
-        Self::Binary(BinaryMessage {
-            message: Some(data.into()),
+    pub fn binary(message: Bytes) -> Self {
+        Message::Binary(BinaryMessage {
+            message,
             context: None,
         })
     }
 
     /// Set the topic context for this message
-    pub fn with_topic<S: Into<String>>(self, topic: S) -> Self {
-        match self {
-            Self::Json(mut json) => {
-                json.context = Some(MessageContext {
-                    topic: Some(topic.into()),
-                });
-                Self::Json(json)
+    pub fn with_topic<S: Into<String>>(mut self, topic: S) -> Self {
+        let topic_str = topic.into();
+        let context = Some(MessageContext {
+            topic: Some(topic_str),
+        });
+
+        match &mut self {
+            Message::Json(msg) => msg.context = context,
+            Message::Binary(msg) => msg.context = context,
+        }
+
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_publish_message_json_serialization() {
+        let message = Message::json(serde_json::json!({"test": "value"}));
+        let serialized = serde_json::to_string(&message).unwrap();
+        let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+
+        match deserialized {
+            Message::Json(json_msg) => {
+                assert_eq!(json_msg.message, serde_json::json!({"test": "value"}));
             }
-            Self::Binary(mut binary) => {
-                binary.context = Some(MessageContext {
-                    topic: Some(topic.into()),
-                });
-                Self::Binary(binary)
+            _ => panic!("Expected JSON message"),
+        }
+    }
+
+    #[test]
+    fn test_publish_message_binary_serialization() {
+        let data = Bytes::from(vec![1, 2, 3, 4]);
+        let message = Message::binary(data.clone());
+        let serialized = serde_json::to_string(&message).unwrap();
+        let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+
+        match deserialized {
+            Message::Binary(binary_msg) => {
+                assert_eq!(binary_msg.message, data);
             }
+            _ => panic!("Expected binary message"),
+        }
+    }
+
+    #[test]
+    fn test_subscription_response_message_serialization() {
+        let json_message = Message::json(serde_json::json!({"key": "value"}));
+        let response = SubscriptionResponseMessage {
+            message: json_message,
+            topic_name: Some("test/topic".to_string()),
+        };
+
+        let serialized = serde_json::to_string(&response).unwrap();
+        let deserialized: SubscriptionResponseMessage = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.topic_name, Some("test/topic".to_string()));
+        match deserialized.message {
+            Message::Json(json_msg) => {
+                assert_eq!(json_msg.message, serde_json::json!({"key": "value"}));
+            }
+            _ => panic!("Expected JSON message"),
+        }
+    }
+
+    #[test]
+    fn test_publish_message_helper_methods() {
+        let json_msg = Message::json(serde_json::json!({"test": true}));
+        assert!(matches!(json_msg, Message::Json(_)));
+
+        let binary_data = Bytes::from(vec![0xFF, 0x00, 0xAA]);
+        let binary_msg = Message::binary(binary_data);
+        assert!(matches!(binary_msg, Message::Binary(_)));
+    }
+
+    #[test]
+    fn test_publish_message_with_topic() {
+        let message = Message::json(serde_json::json!({"data": "test"})).with_topic("my/topic");
+
+        match message {
+            Message::Json(json_msg) => {
+                assert_eq!(
+                    json_msg.context.unwrap().topic,
+                    Some("my/topic".to_string())
+                );
+            }
+            _ => panic!("Expected JSON message"),
         }
     }
 }

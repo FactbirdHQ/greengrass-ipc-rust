@@ -27,10 +27,7 @@ async fn main() -> Result<()> {
     let topic = "/test";
 
     // Example message
-    let message = format!(
-        "Hello from Rust! Current time: {}",
-        chrono::Local::now().to_rfc3339()
-    );
+    let message = "Hello from Rust! Test message";
 
     // Subscribe to the topic
     // println!("Subscribing to topic: {}", topic);
@@ -56,17 +53,23 @@ async fn main() -> Result<()> {
 
     // Publish a message to the topic
     println!("Publishing message to topic: {}", topic);
-    match client
-        .publish_to_topic(topic, message.as_bytes().to_vec())
-        .await
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        client.publish_to_topic(topic, message.as_bytes().to_vec()),
+    )
+    .await
     {
-        Ok(_) => println!("Successfully published message to topic: {}", topic),
+        Ok(Ok(_)) => {
+            println!("Successfully published message to topic: {}", topic);
+            println!("Message content: {}", message);
+        },
+        Ok(Err(e)) => eprintln!("Failed to publish message to topic: {}: {}", topic, e),
         Err(e) => eprintln!("Failed to publish message to topic: {}: {}", topic, e),
     }
 
     // Keep the application running for a while to receive messages
     // println!("Waiting for messages...");
-    // sleep(Duration::from_secs(10)).await;
+    // sleep(Duration::from_secs(1)).await;
 
     println!("Exiting example");
     Ok(())

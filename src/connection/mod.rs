@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::net::{UnixStream, unix::{OwnedReadHalf, OwnedWriteHalf}};
+use tokio::sync::{mpsc, oneshot, RwLock, Mutex};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::error::{Error, Result};
 use crate::event_stream::{
@@ -69,12 +70,16 @@ pub struct Connection {
     lifecycle_handler: Option<Arc<dyn LifecycleHandler>>,
     // Current connection state
     state: Arc<RwLock<ConnectionState>>,
-    // The underlying Unix socket stream
-    stream: Arc<RwLock<Option<UnixStream>>>,
+    // The write half of the Unix socket stream
+    write_stream: Arc<Mutex<Option<OwnedWriteHalf>>>,
     // Receiver for control messages to the read loop
     read_control: mpsc::Sender<ControlMessage>,
     // Stream response handlers mapped by operation ID
     response_handlers: Arc<RwLock<HashMap<String, Box<dyn StreamResponseHandler>>>>,
+    // Response handlers for operations mapped by stream ID
+    operation_response_handlers: Arc<RwLock<HashMap<i32, oneshot::Sender<Result<String>>>>>,
+    // Next stream ID to allocate
+    next_stream_id: Arc<AtomicI32>,
 }
 
 /// Control messages for the read loop
@@ -140,9 +145,11 @@ impl Connection {
             auth_token,
             lifecycle_handler: lifecycle_handler.map(Arc::from),
             state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
-            stream: Arc::new(RwLock::new(None)),
+            write_stream: Arc::new(Mutex::new(None)),
             read_control: read_control_tx,
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
+            operation_response_handlers: Arc::new(RwLock::new(HashMap::new())),
+            next_stream_id: Arc::new(AtomicI32::new(1)),
         };
 
         // Begin the connection process
@@ -199,9 +206,8 @@ impl Connection {
         };
 
         // Socket connected successfully, move to waiting for CONNECT_ACK
-        {
+        let (read_half, write_half) = {
             let mut state_guard = self.state.write().await;
-            let mut stream_guard = self.stream.write().await;
 
             // Check if close() was called during connection
             if *state_guard == ConnectionState::Disconnecting {
@@ -211,7 +217,15 @@ impl Connection {
                 ));
             }
             *state_guard = ConnectionState::WaitingForConnectAck;
-            *stream_guard = Some(stream);
+            
+            // Split the stream into read and write halves
+            stream.into_split()
+        };
+
+        // Store the write half
+        {
+            let mut write_guard = self.write_stream.lock().await;
+            *write_guard = Some(write_half);
         }
 
         // Create a oneshot channel for receiving the CONNECT_ACK signal
@@ -220,12 +234,13 @@ impl Connection {
         // Clone the connection so it can be moved into the read loop
         let connection_for_read = self.clone();
 
-        // Start the message read loop in the background
+        // Start the message read loop in the background with the read half
         let read_task = tokio::task::spawn(async move {
             connection_for_read
-                .message_read_loop(Some(connect_ack_tx), read_control_rx)
+                .message_read_loop_with_reader(Some(connect_ack_tx), read_control_rx, read_half)
                 .await;
         });
+
 
         // Send the CONNECT message with auth token
         debug!("Socket connection established, sending CONNECT message");
@@ -281,7 +296,7 @@ impl Connection {
         &self.socket_path
     }
 
-    /// Get the authentication token used for this connection
+    /// Get the auth token used for this connection
     pub fn auth_token(&self) -> &str {
         &self.auth_token
     }
@@ -293,9 +308,11 @@ impl Connection {
             auth_token: self.auth_token.clone(),
             lifecycle_handler: self.lifecycle_handler.clone(),
             state: self.state.clone(),
-            stream: self.stream.clone(),
+            write_stream: self.write_stream.clone(),
             read_control: self.read_control.clone(),
             response_handlers: self.response_handlers.clone(),
+            operation_response_handlers: self.operation_response_handlers.clone(),
+            next_stream_id: self.next_stream_id.clone(),
         }
     }
 
@@ -327,9 +344,9 @@ impl Connection {
         // Signal the read loop to stop
         let _ = self.read_control.send(ControlMessage::Stop).await;
 
-        // Take the stream to close it
-        let mut stream_guard = self.stream.write().await;
-        if stream_guard.take().is_some() {
+        // Take the write stream to close it
+        let mut write_guard = self.write_stream.lock().await;
+        if write_guard.take().is_some() {
             debug!("Closed Unix socket connection");
         }
 
@@ -342,24 +359,40 @@ impl Connection {
     /// Send a message over the connection
     pub async fn send_message(&self, message: &EventStreamMessage) -> Result<()> {
         let state = *self.state.read().await;
+        debug!("Sending message in state: {:?}", state);
 
         if state != ConnectionState::Connected && state != ConnectionState::WaitingForConnectAck {
+            error!("Cannot send message - connection not established, state: {:?}", state);
             return Err(Error::ConnectionClosed(
                 "Connection is not established".to_string(),
             ));
         }
 
-        let mut stream_guard = self.stream.write().await;
-        if let Some(stream) = &mut *stream_guard {
+        let mut write_guard = self.write_stream.lock().await;
+        if let Some(write_stream) = &mut *write_guard {
             let encoded = message.encode()?;
+            debug!("Encoded message size: {} bytes", encoded.len());
 
-            stream
+            write_stream
                 .write_all(&encoded)
                 .await
-                .map_err(|e| Error::SendFailed(e.to_string()))?;
+                .map_err(|e| {
+                    error!("Failed to write message: {}", e);
+                    Error::SendFailed(e.to_string())
+                })?;
 
+            write_stream
+                .flush()
+                .await
+                .map_err(|e| {
+                    error!("Failed to flush stream: {}", e);
+                    Error::SendFailed(e.to_string())
+                })?;
+
+            debug!("Message sent successfully");
             Ok(())
         } else {
+            error!("No active write stream available");
             Err(Error::ConnectionClosed("No active stream".to_string()))
         }
     }
@@ -382,11 +415,12 @@ impl Connection {
         Ok(())
     }
 
-    /// Main message read loop that processes incoming messages
-    async fn message_read_loop(
+    /// Main message read loop that processes incoming messages with dedicated read half
+    async fn message_read_loop_with_reader(
         &self,
         mut connect_ack_tx: Option<oneshot::Sender<Result<()>>>,
         mut control_rx: mpsc::Receiver<ControlMessage>,
+        mut read_stream: OwnedReadHalf,
     ) {
         let mut buffer = vec![0u8; 1024 * 64]; // 64KB buffer for reading
         let mut reader = crate::event_stream::EventStreamReader::new();
@@ -404,54 +438,46 @@ impl Connection {
             }
 
             // Read from the stream
-            let bytes_read = {
-                let mut stream_guard = self.stream.write().await;
-                if let Some(stream) = &mut *stream_guard {
-                    match stream.read(&mut buffer).await {
-                        Ok(0) => {
-                            // EOF
-                            debug!("Socket connection closed by remote");
+            let bytes_read = match read_stream.read(&mut buffer).await {
+                Ok(0) => {
+                    // EOF
+                    debug!("Socket connection closed by remote");
 
-                            // If we haven't sent the connect ack yet, send an error
-                            if !connect_ack_sent {
-                                if let Some(tx) = connect_ack_tx.take() {
-                                    let _ = tx.send(Err(Error::ConnectionClosed(
-                                        "Connection closed by remote".to_string(),
-                                    )));
-                                    connect_ack_sent = true;
-                                }
-                            }
-
-                            // Call handle_disconnection to notify handlers
-                            self.handle_disconnection(Error::ConnectionClosed(
+                    // If we haven't sent the connect ack yet, send an error
+                    if !connect_ack_sent {
+                        if let Some(tx) = connect_ack_tx.take() {
+                            let _ = tx.send(Err(Error::ConnectionClosed(
                                 "Connection closed by remote".to_string(),
-                            ))
-                            .await;
-
-                            break;
-                        }
-                        Ok(n) => n,
-                        Err(e) => {
-                            // Read error
-                            error!("Error reading from socket: {}", e);
-
-                            // If we haven't sent the connect ack yet, send an error
-                            if !connect_ack_sent {
-                                if let Some(tx) = connect_ack_tx.take() {
-                                    let _ = tx.send(Err(Error::ReceiveFailed(e.to_string())));
-                                    connect_ack_sent = true;
-                                }
-                            }
-
-                            // Call handle_disconnection to notify handlers
-                            self.handle_disconnection(Error::ReceiveFailed(e.to_string()))
-                                .await;
-
-                            break;
+                            )));
+                            connect_ack_sent = true;
                         }
                     }
-                } else {
-                    // No stream, exit the loop
+
+                    // Call handle_disconnection to notify handlers
+                    self.handle_disconnection(Error::ConnectionClosed(
+                        "Connection closed by remote".to_string(),
+                    ))
+                    .await;
+
+                    break;
+                }
+                Ok(n) => n,
+                Err(e) => {
+                    // Read error
+                    error!("Error reading from socket: {}", e);
+
+                    // If we haven't sent the connect ack yet, send an error
+                    if !connect_ack_sent {
+                        if let Some(tx) = connect_ack_tx.take() {
+                            let _ = tx.send(Err(Error::ReceiveFailed(e.to_string())));
+                            connect_ack_sent = true;
+                        }
+                    }
+
+                    // Call handle_disconnection to notify handlers
+                    self.handle_disconnection(Error::ReceiveFailed(e.to_string()))
+                        .await;
+
                     break;
                 }
             };
@@ -548,12 +574,12 @@ impl Connection {
                 trace!("Received integer message type: {}", msg_type);
                 match *msg_type {
                     0 => {
-                        // APPLICATION_MESSAGE
-                        self.handle_stream_event(message).await?;
+                        // APPLICATION_MESSAGE - could be a response to an operation
+                        self.handle_application_message(message).await?;
                     }
                     1 => {
-                        // APPLICATION_ERROR
-                        self.handle_error(message).await?;
+                        // APPLICATION_ERROR - could be a response to an operation
+                        self.handle_application_message(message).await?;
                     }
                     2 => {
                         // PING
@@ -609,6 +635,36 @@ impl Connection {
         Ok(())
     }
 
+    /// Allocate a unique stream ID for a new operation
+    pub async fn allocate_stream_id(&self) -> Result<i32> {
+        Ok(self.next_stream_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Register a response handler for an operation
+    pub async fn register_response_handler(&self, stream_id: i32, sender: oneshot::Sender<Result<String>>) -> Result<()> {
+        let mut handlers = self.operation_response_handlers.write().await;
+        handlers.insert(stream_id, sender);
+        Ok(())
+    }
+
+    /// Handle an APPLICATION_MESSAGE (could be response to operation)
+    async fn handle_application_message(&self, message: EventStreamMessage) -> Result<()> {
+        // Get the stream ID from the message
+        if let Some(HeaderValue::I32(stream_id)) = message.get_header(":stream-id") {
+            // Check if this is a response to one of our operations
+            let mut handlers = self.operation_response_handlers.write().await;
+            if let Some(sender) = handlers.remove(stream_id) {
+                // This is a response to an operation
+                let payload_str = String::from_utf8_lossy(&message.payload).to_string();
+                let _ = sender.send(Ok(payload_str));
+                return Ok(());
+            }
+        }
+
+        // If not an operation response, treat as stream event
+        self.handle_stream_event(message).await
+    }
+
     /// Handle a CONNECT_ACK message
     async fn handle_connect_ack(
         &self,
@@ -627,9 +683,15 @@ impl Connection {
             return Ok(());
         }
 
-        // Check if connection was accepted
-        if let Some(HeaderValue::String(flags)) = message.get_header(":connection-accept") {
-            if flags != "true" {
+        // Debug log all headers and payload in CONNECT_ACK
+        debug!("CONNECT_ACK message headers: {:?}", message.headers);
+        debug!("CONNECT_ACK message payload: {}", String::from_utf8_lossy(&message.payload));
+
+        // Check if connection was accepted by looking at message flags
+        // CONNECTION_ACCEPTED flag = 0x01
+        if let Some(HeaderValue::I32(flags)) = message.get_header(":message-flags") {
+            debug!("CONNECT_ACK flags: 0x{:x}", flags);
+            if (flags & 0x01) == 0 {
                 let err = Error::AuthenticationError("Connection access denied".to_string());
 
                 // Complete the channel with an error
@@ -637,6 +699,11 @@ impl Connection {
 
                 return Err(err);
             }
+        } else {
+            // No flags header found, assume connection denied
+            let err = Error::AuthenticationError("No connection flags in CONNECT_ACK".to_string());
+            let _ = connect_ack_tx.send(Err(err.clone()));
+            return Err(err);
         }
 
         debug!("CONNECT_ACK received, connection established");

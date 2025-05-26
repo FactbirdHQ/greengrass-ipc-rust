@@ -2,7 +2,6 @@
 //!
 //! This module provides the main client interface for the Greengrass Core IPC service.
 
-use crate::operation::Operation;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,13 +11,13 @@ use crate::error::{Error, Result};
 use crate::event_stream::StreamResponseHandler;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
-    BinaryMessage, PublishMessage, PublishToTopicRequest, PublishToTopicResponse,
-    SubscribeToTopicRequest, SubscribeToTopicResponse, SubscriptionResponseMessage,
+    BinaryMessage, Message, PublishToTopicRequest, PublishToTopicResponse, SubscribeToTopicRequest,
+    SubscribeToTopicResponse, SubscriptionResponseMessage,
 };
 use crate::operation::StreamOperation;
 
 /// Default timeout for operations in seconds
-const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Client for the Greengrass Core IPC service
 pub struct GreengrassCoreIPCClient {
@@ -94,13 +93,10 @@ impl GreengrassCoreIPCClient {
         // Create the request
         let request = PublishToTopicRequest {
             topic: topic.to_string(),
-            publish_message: PublishMessage {
-                binary_message: Some(BinaryMessage {
-                    message: Some(payload.into()),
-                    context: None,
-                }),
-                json_message: None,
-            },
+            publish_message: Message::Binary(BinaryMessage {
+                message: payload.into(),
+                context: None,
+            }),
         };
 
         // Send the request
@@ -112,58 +108,121 @@ impl GreengrassCoreIPCClient {
         &self,
         request: PublishToTopicRequest,
     ) -> Result<PublishToTopicResponse> {
-        // Create a unique operation ID for this request
-        let operation_id = format!("publish-to-topic-{}", uuid::Uuid::new_v4());
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
 
         // Create a oneshot channel for the response
-        let (_response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
 
         // Serialize the request to JSON
         let request_json = serde_json::to_string(&request)
             .map_err(|e| Error::SerializationError(e.to_string()))?;
 
-        // Create the event stream message
-        // In a real implementation, this would include proper headers and framing
-        // based on the AWS event stream protocol
-        let message = format!(
-            "{{\"operation\":\"aws.greengrass#PublishToTopic\",\"operationId\":\"{}\",\"payload\":{}}}",
-            operation_id,
-            request_json
-        );
-
-        // Register the response handler
-        // This would be handled by the connection's message routing system
-        // which we'll assume exists as part of the Connection implementation
-        // TODO: Implement a proper message routing system in the Connection
-
-        // Send the message over the connection
-        // Create an event stream message to send
+        // Create the event stream message following AWS Event Stream RPC protocol
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
             .with_header(
-                ":operation".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#PublishToTopic".to_string(),
-                ),
+                ":message-type".to_string(),
+                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
+            )
+            .with_header(
+                ":stream-id".to_string(),
+                crate::event_stream::HeaderValue::I32(stream_id),
+            )
+            .with_header(
+                ":message-flags".to_string(),
+                crate::event_stream::HeaderValue::I32(0), // No flags
             )
             .with_header(
                 ":content-type".to_string(),
                 crate::event_stream::HeaderValue::String("application/json".to_string()),
             )
-            .with_payload(message.as_bytes().to_vec());
+            .with_header(
+                "operation".to_string(),
+                crate::event_stream::HeaderValue::String(
+                    "aws.greengrass#PublishToTopic".to_string(),
+                ),
+            )
+            .with_header(
+                "service-model-type".to_string(),
+                crate::event_stream::HeaderValue::String(
+                    "aws.greengrass#PublishToTopicRequest".to_string(),
+                ),
+            )
+            .with_payload(request_json.as_bytes().to_vec());
 
-        self.connection.send_message(&event_message).await?;
-
-        // Create an operation that will resolve when the response is received
-        let operation = Operation::new(
-            self.connection.clone(),
-            operation_id,
-            response_receiver,
-            self.operation_timeout,
+        // Send the message over the connection
+        log::debug!("Sending PublishToTopic operation on stream {}", stream_id);
+        log::trace!("Message headers: {:?}", event_message.headers);
+        log::trace!(
+            "Message payload: {}",
+            String::from_utf8_lossy(&event_message.payload)
         );
 
-        // Return the result of the operation
-        operation.get_result().await
+        match self.connection.send_message(&event_message).await {
+            Ok(()) => log::debug!("PublishToTopic message sent successfully"),
+            Err(e) => {
+                log::error!("Failed to send PublishToTopic message: {}", e);
+                return Err(e);
+            }
+        }
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("PublishToTopic failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: PublishToTopicResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Subscribe to a topic

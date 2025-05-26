@@ -18,10 +18,7 @@ use std::time::Duration;
 pub use client::GreengrassCoreIPCClient;
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
-pub use model::{
-    BinaryMessage, JsonMessage, Message, MessageContext, PublishMessage,
-    SubscriptionResponseMessage,
-};
+pub use model::{BinaryMessage, JsonMessage, Message, MessageContext, SubscriptionResponseMessage};
 
 /// Connect to the Greengrass Core IPC service with default parameters.
 ///
