@@ -3,11 +3,11 @@ use log::LevelFilter;
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// A simple example demonstrating the use of the Greengrass IPC client
+/// A simple example demonstrating subscription to a Greengrass IPC topic
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::builder()
-        .filter_level(LevelFilter::Trace)
+        .filter_level(LevelFilter::Info)
         .init();
 
     // Connect to the Greengrass Core IPC service
@@ -18,20 +18,16 @@ async fn main() -> Result<()> {
         }
         Err(e) => {
             eprintln!("Failed to connect to Greengrass Core IPC service: {}", e);
-            // In a real application, we might want to retry the connection
             return Err(e);
         }
     };
 
-    // Example topic for pub/sub
+    // Example topic for subscription
     let topic = "/test";
-
-    // Example message
-    let message = "Hello from Rust! Test message";
 
     // Subscribe to the topic
     println!("Subscribing to topic: {}", topic);
-    let subscription = client
+    let _subscription = client
         .subscribe_to_topic(topic, |msg| async move {
             match msg.message {
                 Message::Json(json_message) => {
@@ -45,31 +41,17 @@ async fn main() -> Result<()> {
         })
         .await;
 
-    match subscription {
+    match _subscription {
         Ok(_) => println!("Successfully subscribed to topic: {}", topic),
-        Err(e) => eprintln!("Failed to subscribe to topic: {}: {}", topic, e),
-    }
-
-    // Publish a message to the topic
-    println!("Publishing message to topic: {}", topic);
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        client.publish_to_topic(topic, message.as_bytes().to_vec()),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {
-            println!("Successfully published message to topic: {}", topic);
-            println!("Message content: {}", message);
+        Err(e) => {
+            eprintln!("Failed to subscribe to topic: {}: {}", topic, e);
+            return Err(e);
         }
-        Ok(Err(e)) => eprintln!("Failed to publish message to topic: {}: {}", topic, e),
-        Err(e) => eprintln!("Failed to publish message to topic: {}: {}", topic, e),
     }
 
-    // Keep the application running for a while to receive messages
-    println!("Waiting for messages...");
-    sleep(Duration::from_secs(10)).await;
-
-    println!("Exiting example");
-    Ok(())
+    // Keep the application running to receive messages
+    println!("Waiting for messages... Press Ctrl+C to exit");
+    loop {
+        sleep(Duration::from_secs(1)).await;
+    }
 }

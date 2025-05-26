@@ -78,6 +78,8 @@ pub struct Connection {
     response_handlers: Arc<RwLock<HashMap<String, Box<dyn StreamResponseHandler>>>>,
     // Response handlers for operations mapped by stream ID
     operation_response_handlers: Arc<RwLock<HashMap<i32, oneshot::Sender<Result<String>>>>>,
+    // Mapping from stream ID to operation ID for subscription handling
+    stream_to_operation_map: Arc<RwLock<HashMap<i32, String>>>,
     // Next stream ID to allocate
     next_stream_id: Arc<AtomicI32>,
 }
@@ -94,10 +96,10 @@ pub trait StreamResponseHandler: Send + Sync + 'static {
     fn handle_message(&self, message: EventStreamMessage) -> Result<()>;
 
     /// Handle an error on the stream
-    fn handle_error(&self, error: &Error) -> bool;
+    fn handle_error(&self, error: &Error) -> Result<bool>;
 
     /// Handle stream closure
-    fn handle_closed(&self);
+    fn handle_closed(&self) -> Result<()>;
 }
 
 impl Connection {
@@ -149,6 +151,7 @@ impl Connection {
             read_control: read_control_tx,
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
             operation_response_handlers: Arc::new(RwLock::new(HashMap::new())),
+            stream_to_operation_map: Arc::new(RwLock::new(HashMap::new())),
             next_stream_id: Arc::new(AtomicI32::new(1)),
         };
 
@@ -312,6 +315,7 @@ impl Connection {
             read_control: self.read_control.clone(),
             response_handlers: self.response_handlers.clone(),
             operation_response_handlers: self.operation_response_handlers.clone(),
+            stream_to_operation_map: self.stream_to_operation_map.clone(),
             next_stream_id: self.next_stream_id.clone(),
         }
     }
@@ -412,6 +416,11 @@ impl Connection {
     pub async fn unregister_stream_handler(&self, operation_id: &str) -> Result<()> {
         let mut handlers = self.response_handlers.write().await;
         handlers.remove(operation_id);
+        
+        // Also remove from stream mapping
+        let mut mapping = self.stream_to_operation_map.write().await;
+        mapping.retain(|_, op_id| op_id != operation_id);
+        
         Ok(())
     }
 
@@ -647,6 +656,13 @@ impl Connection {
         Ok(())
     }
 
+    /// Register a mapping from stream ID to operation ID for subscription handling
+    pub async fn register_stream_operation_mapping(&self, stream_id: i32, operation_id: String) -> Result<()> {
+        let mut mapping = self.stream_to_operation_map.write().await;
+        mapping.insert(stream_id, operation_id);
+        Ok(())
+    }
+
     /// Handle an APPLICATION_MESSAGE (could be response to operation)
     async fn handle_application_message(&self, message: EventStreamMessage) -> Result<()> {
         // Get the stream ID from the message
@@ -727,18 +743,27 @@ impl Connection {
 
     /// Handle a stream event message
     async fn handle_stream_event(&self, message: EventStreamMessage) -> Result<()> {
-        // Extract operation ID
-        let operation_id = match message.get_string_header(":operation-id") {
-            Some(id) => id,
-            None => {
-                warn!("Received stream event with no operation ID");
-                return Ok(());
+        // Try to extract operation ID directly first
+        let operation_id = if let Some(id) = message.get_string_header(":operation-id") {
+            id.to_string()
+        } else if let Some(HeaderValue::I32(stream_id)) = message.get_header(":stream-id") {
+            // If no operation ID, try to map from stream ID (for subscriptions)
+            let mapping = self.stream_to_operation_map.read().await;
+            match mapping.get(stream_id) {
+                Some(id) => id.clone(),
+                None => {
+                    warn!("Received stream event with no operation ID and no stream mapping for stream {}", stream_id);
+                    return Ok(());
+                }
             }
+        } else {
+            warn!("Received stream event with no operation ID or stream ID");
+            return Ok(());
         };
 
         // Find the appropriate handler
         let handlers = self.response_handlers.read().await;
-        if let Some(handler) = handlers.get(operation_id) {
+        if let Some(handler) = handlers.get(&operation_id) {
             handler.handle_message(message)?;
         } else {
             warn!("No handler found for operation ID: {}", operation_id);
@@ -795,8 +820,15 @@ impl Connection {
         let handlers = self.response_handlers.read().await;
         if let Some(handler) = handlers.get(operation_id) {
             // If handler returns true, it wants to close the operation
-            if handler.handle_error(&error) {
-                // Operation will be closed by the client
+            match handler.handle_error(&error) {
+                Ok(should_close) => {
+                    if should_close {
+                        // Operation will be closed by the client
+                    }
+                }
+                Err(e) => {
+                    warn!("Error handling stream error: {}", e);
+                }
             }
         } else {
             warn!("No handler found for operation ID: {}", operation_id);
@@ -857,7 +889,9 @@ impl Connection {
         {
             let handlers = self.response_handlers.read().await;
             for (_, handler) in handlers.iter() {
-                handler.handle_closed();
+                if let Err(e) = handler.handle_closed() {
+                    warn!("Error handling stream closure: {}", e);
+                }
             }
         }
 
