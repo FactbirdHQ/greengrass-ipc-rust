@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 
 use crate::error::{Error, Result};
 use crate::event_stream::{
-    EventStreamMessage, HeaderValue, MESSAGE_TYPE_CONNECT, MESSAGE_TYPE_CONNECT_ACK,
+    EventStreamMessage, HeaderValue, MESSAGE_TYPE_CONNECT_ACK,
 };
 use crate::lifecycle::{ConnectionError, LifecycleHandler};
 
@@ -59,6 +59,7 @@ enum ConnectionState {
 }
 
 /// A connection to the Greengrass IPC service
+/// A connection to the Greengrass IPC service
 pub struct Connection {
     // Socket path used for this connection
     socket_path: PathBuf,
@@ -70,14 +71,8 @@ pub struct Connection {
     state: Arc<RwLock<ConnectionState>>,
     // The underlying Unix socket stream
     stream: Arc<RwLock<Option<UnixStream>>>,
-    // Connect future for tracking connection progress
-    connect_future: Arc<RwLock<Option<oneshot::Sender<Result<()>>>>>,
-    // The reason for closure if the connection is closing
-    close_reason: Arc<RwLock<Option<Error>>>,
-    // Closed future for tracking when the connection is fully closed
-    closed_future: Arc<RwLock<Option<oneshot::Sender<Result<()>>>>>,
     // Receiver for control messages to the read loop
-    read_control: Arc<mpsc::Sender<ControlMessage>>,
+    read_control: mpsc::Sender<ControlMessage>,
     // Stream response handlers mapped by operation ID
     response_handlers: Arc<RwLock<HashMap<String, Box<dyn StreamResponseHandler>>>>,
 }
@@ -146,27 +141,34 @@ impl Connection {
             lifecycle_handler: lifecycle_handler.map(Arc::from),
             state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
             stream: Arc::new(RwLock::new(None)),
-            connect_future: Arc::new(RwLock::new(None)),
-            close_reason: Arc::new(RwLock::new(None)),
-            closed_future: Arc::new(RwLock::new(None)),
-            read_control: Arc::new(read_control_tx),
+            read_control: read_control_tx,
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Begin the connection process
-        let result = connection
-            .connect_internal(timeout.unwrap_or(DEFAULT_TIMEOUT), read_control_rx)
-            .await;
+        let timeout_duration = timeout.unwrap_or(DEFAULT_TIMEOUT);
 
-        if result.is_err() {
-            // Update state to disconnected if connection failed
-            *connection.state.write().await = ConnectionState::Disconnected;
+        // Update state to connecting
+        {
+            let mut state = connection.state.write().await;
+            if *state != ConnectionState::Disconnected {
+                return Err(Error::InvalidOperation(
+                    "Connection already in progress".to_string(),
+                ));
+            }
+            *state = ConnectionState::ConnectingToSocket;
         }
 
-        // Return the connection object or the error
-        match result {
+        // Start the connection process
+        match connection
+            .connect_internal(timeout_duration, read_control_rx)
+            .await
+        {
             Ok(_) => Ok(connection),
-            Err(e) => Err(e),
+            Err(e) => {
+                *connection.state.write().await = ConnectionState::Disconnected;
+                Err(e)
+            }
         }
     }
 
@@ -176,28 +178,6 @@ impl Connection {
         timeout: Duration,
         read_control_rx: mpsc::Receiver<ControlMessage>,
     ) -> Result<()> {
-        // Create the oneshot channel for the connect future
-        let (connect_tx, connect_rx) = oneshot::channel::<Result<()>>();
-        let (closed_tx, _closed_rx) = oneshot::channel::<Result<()>>();
-
-        // Update state to connecting
-        {
-            let mut state = self.state.write().await;
-            let mut connect_future = self.connect_future.write().await;
-            let mut closed_future = self.closed_future.write().await;
-
-            // Cannot connect if already connecting or connected
-            if *state != ConnectionState::Disconnected {
-                return Err(Error::InvalidOperation(
-                    "Connection already in progress".to_string(),
-                ));
-            }
-
-            *state = ConnectionState::ConnectingToSocket;
-            *connect_future = Some(connect_tx);
-            *closed_future = Some(closed_tx);
-        }
-
         // Connect to the Unix socket with timeout
         info!(
             "Connecting to Unix socket at {}",
@@ -211,13 +191,9 @@ impl Connection {
         let stream = match stream_result {
             Ok(Ok(stream)) => stream,
             Ok(Err(e)) => {
-                let error = Error::ConnectionFailed(e.to_string());
-                self.handle_connection_failure(error).await;
                 return Err(Error::ConnectionFailed(e.to_string()));
             }
             Err(_) => {
-                let error = Error::ConnectionTimeout;
-                self.handle_connection_failure(error).await;
                 return Err(Error::ConnectionTimeout);
             }
         };
@@ -234,10 +210,22 @@ impl Connection {
                     "Connection closed during setup".to_string(),
                 ));
             }
-
             *state_guard = ConnectionState::WaitingForConnectAck;
             *stream_guard = Some(stream);
         }
+
+        // Create a oneshot channel for receiving the CONNECT_ACK signal
+        let (connect_ack_tx, connect_ack_rx) = oneshot::channel::<Result<()>>();
+
+        // Clone the connection so it can be moved into the read loop
+        let connection_for_read = self.clone();
+
+        // Start the message read loop in the background
+        let read_task = tokio::task::spawn(async move {
+            connection_for_read
+                .message_read_loop(Some(connect_ack_tx), read_control_rx)
+                .await;
+        });
 
         // Send the CONNECT message with auth token
         debug!("Socket connection established, sending CONNECT message");
@@ -253,49 +241,40 @@ impl Connection {
             )
             .with_header(
                 ":message-type".to_string(),
-                HeaderValue::String(MESSAGE_TYPE_CONNECT.to_string()),
+                HeaderValue::I32(4), // CONNECT = 4
+            )
+            .with_header(
+                ":message-flags".to_string(),
+                HeaderValue::I32(0), // No flags
+            )
+            .with_header(
+                ":stream-id".to_string(),
+                HeaderValue::I32(0), // Protocol messages use stream-id 0
             )
             .with_payload(auth_payload.into_bytes());
-
-        // Set up read loop that will handle messages including the CONNECT_ACK
-        let read_state = self.clone();
-        let read_stream = self.stream.clone();
-
-        tokio::spawn(async move {
-            read_state
-                .message_read_loop(read_stream, read_control_rx)
-                .await;
-        });
 
         // Send the CONNECT message
         self.send_message(&connect_message).await?;
 
         // Wait for the connection to complete with timeout
-        match tokio::time::timeout(timeout, connect_rx).await {
+        match tokio::time::timeout(timeout, connect_ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::ConnectionClosed(
-                "Connect future was dropped".to_string(),
+                "Connect ACK channel was dropped".to_string(),
             )),
             Err(_) => {
                 // Connection timed out waiting for CONNECT_ACK
-                self.close(Some(Error::ConnectionTimeout)).await?;
+                // Abort the read task
+                read_task.abort();
+
+                // Close the connection
+                self.close_internal().await?;
                 Err(Error::ConnectionTimeout)
             }
         }
     }
 
-    /// Handle connection failure before the socket is connected
-    async fn handle_connection_failure(&self, error: Error) {
-        let mut state = self.state.write().await;
-        let mut connect_future = self.connect_future.write().await;
-
-        if let Some(sender) = connect_future.take() {
-            // Ignore if receiver was dropped
-            let _ = sender.send(Err(error.clone()));
-        }
-
-        *state = ConnectionState::Disconnected;
-    }
+    // Handle connection failure is no longer needed - error handling is done directly in connect_internal
 
     /// Get the socket path used for this connection
     pub fn socket_path(&self) -> &Path {
@@ -315,60 +294,49 @@ impl Connection {
             lifecycle_handler: self.lifecycle_handler.clone(),
             state: self.state.clone(),
             stream: self.stream.clone(),
-            connect_future: self.connect_future.clone(),
-            close_reason: self.close_reason.clone(),
-            closed_future: self.closed_future.clone(),
             read_control: self.read_control.clone(),
             response_handlers: self.response_handlers.clone(),
         }
     }
 
     /// Close the connection
-    pub async fn close(&self, reason: Option<Error>) -> Result<oneshot::Receiver<Result<()>>> {
-        let mut result = None;
+    /// Close the connection
+    pub async fn close(&self, reason: Option<Error>) -> Result<()> {
+        let state = *self.state.read().await;
 
-        {
-            let mut state = self.state.write().await;
-            let mut close_reason = self.close_reason.write().await;
+        // Only try to close if not already disconnected or disconnecting
+        if state != ConnectionState::Disconnected && state != ConnectionState::Disconnecting {
+            // Set the state to disconnecting
+            *self.state.write().await = ConnectionState::Disconnecting;
 
-            // Only try to close if not already disconnected or disconnecting
-            if *state != ConnectionState::Disconnected && *state != ConnectionState::Disconnecting {
-                // Set the close reason if one was provided
-                if let Some(err) = reason {
-                    *close_reason = Some(err);
-                }
+            // Close the connection
+            self.close_internal().await?;
 
-                *state = ConnectionState::Disconnecting;
-
-                // If we have a stream, close it
-                let mut stream_guard = self.stream.write().await;
-                if let Some(stream) = stream_guard.take() {
-                    debug!("Closing Unix socket connection");
-
-                    // Create a new closed future if needed
-                    let mut closed_future = self.closed_future.write().await;
-                    let (tx, rx) = oneshot::channel();
-
-                    *closed_future = Some(tx);
-                    result = Some(rx);
-
-                    // Signal the read loop to stop
-                    let _ = self.read_control.send(ControlMessage::Stop).await;
-
-                    // Close the socket
-                    drop(stream);
-                }
+            // Notify lifecycle handler of disconnection
+            if let Some(handler) = &self.lifecycle_handler {
+                let conn_error = reason.map(|e| ConnectionError::Other(e.to_string()));
+                handler.on_disconnect(conn_error.as_ref());
             }
         }
 
-        // If we already had a closed future, return it
-        if result.is_none() {
-            let (tx, rx) = oneshot::channel();
-            tx.send(Ok(())).unwrap();
-            result = Some(rx);
+        Ok(())
+    }
+
+    /// Internal connection closing logic
+    async fn close_internal(&self) -> Result<()> {
+        // Signal the read loop to stop
+        let _ = self.read_control.send(ControlMessage::Stop).await;
+
+        // Take the stream to close it
+        let mut stream_guard = self.stream.write().await;
+        if stream_guard.take().is_some() {
+            debug!("Closed Unix socket connection");
         }
 
-        Ok(result.unwrap())
+        // Set state to disconnected
+        *self.state.write().await = ConnectionState::Disconnected;
+
+        Ok(())
     }
 
     /// Send a message over the connection
@@ -417,11 +385,12 @@ impl Connection {
     /// Main message read loop that processes incoming messages
     async fn message_read_loop(
         &self,
-        stream: Arc<RwLock<Option<UnixStream>>>,
+        mut connect_ack_tx: Option<oneshot::Sender<Result<()>>>,
         mut control_rx: mpsc::Receiver<ControlMessage>,
     ) {
         let mut buffer = vec![0u8; 1024 * 64]; // 64KB buffer for reading
         let mut reader = crate::event_stream::EventStreamReader::new();
+        let mut connect_ack_sent = false;
 
         'outer: loop {
             // Check for control messages
@@ -436,24 +405,48 @@ impl Connection {
 
             // Read from the stream
             let bytes_read = {
-                let mut stream_guard = stream.write().await;
+                let mut stream_guard = self.stream.write().await;
                 if let Some(stream) = &mut *stream_guard {
                     match stream.read(&mut buffer).await {
                         Ok(0) => {
                             // EOF
                             debug!("Socket connection closed by remote");
+
+                            // If we haven't sent the connect ack yet, send an error
+                            if !connect_ack_sent {
+                                if let Some(tx) = connect_ack_tx.take() {
+                                    let _ = tx.send(Err(Error::ConnectionClosed(
+                                        "Connection closed by remote".to_string(),
+                                    )));
+                                    connect_ack_sent = true;
+                                }
+                            }
+
+                            // Call handle_disconnection to notify handlers
                             self.handle_disconnection(Error::ConnectionClosed(
                                 "Connection closed by remote".to_string(),
                             ))
                             .await;
+
                             break;
                         }
                         Ok(n) => n,
                         Err(e) => {
                             // Read error
                             error!("Error reading from socket: {}", e);
+
+                            // If we haven't sent the connect ack yet, send an error
+                            if !connect_ack_sent {
+                                if let Some(tx) = connect_ack_tx.take() {
+                                    let _ = tx.send(Err(Error::ReceiveFailed(e.to_string())));
+                                    connect_ack_sent = true;
+                                }
+                            }
+
+                            // Call handle_disconnection to notify handlers
                             self.handle_disconnection(Error::ReceiveFailed(e.to_string()))
                                 .await;
+
                             break;
                         }
                     }
@@ -470,14 +463,28 @@ impl Connection {
             loop {
                 match reader.try_read_message() {
                     Ok(Some(message)) => {
-                        // Handle the message
-                        if let Err(e) = self.handle_message(message).await {
-                            error!("Error handling message: {}", e);
+                        // Handle the message - if we need to pass the oneshot sender,
+                        // we'll pass it and take ownership, otherwise we'll keep it
+                        let is_connect_ack = match message.get_header(":message-type") {
+                            Some(HeaderValue::String(msg_type)) => msg_type == MESSAGE_TYPE_CONNECT_ACK,
+                            Some(HeaderValue::I32(5)) => true, // CONNECT_ACK = 5
+                            _ => false,
+                        };
 
-                            // If handling the CONNECT_ACK fails, we need to disconnect
-                            if *self.state.read().await == ConnectionState::WaitingForConnectAck {
-                                self.handle_disconnection(e).await;
-                                break 'outer;
+                        if is_connect_ack && !connect_ack_sent {
+                            // For CONNECT_ACK we need to handle it specially
+                            if let Some(tx) = connect_ack_tx.take() {
+                                if let Err(e) = self.handle_connect_ack(message, tx).await {
+                                    error!("Error handling CONNECT_ACK: {}", e);
+                                    connect_ack_sent = true;
+                                    break 'outer;
+                                }
+                                connect_ack_sent = true;
+                            }
+                        } else {
+                            // For other message types, we can handle them directly
+                            if let Err(e) = self.handle_non_connect_message(message).await {
+                                error!("Error handling message: {}", e);
                             }
                         }
                     }
@@ -488,8 +495,19 @@ impl Connection {
                     Err(e) => {
                         // Protocol error
                         error!("Protocol error decoding message: {}", e);
+
+                        // If we haven't sent the connect ack yet, send an error
+                        if !connect_ack_sent {
+                            if let Some(tx) = connect_ack_tx.take() {
+                                let _ = tx.send(Err(Error::ProtocolError(e.to_string())));
+                                connect_ack_sent = true;
+                            }
+                        }
+
+                        // Call handle_disconnection to notify handlers
                         self.handle_disconnection(Error::ProtocolError(e.to_string()))
                             .await;
+
                         break 'outer;
                     }
                 }
@@ -499,53 +517,125 @@ impl Connection {
         debug!("Message read loop exiting");
     }
 
-    /// Handle a received message
-    async fn handle_message(&self, message: EventStreamMessage) -> Result<()> {
+    /// Handle a non-connection message
+    async fn handle_non_connect_message(&self, message: EventStreamMessage) -> Result<()> {
         trace!("Received message with {} headers", message.headers.len());
+        
+        // Debug: print all headers
+        for (name, value) in &message.headers {
+            trace!("Header: {} = {:?}", name, value);
+        }
 
-        // Check message type
-        let message_type = match message.get_string_header(":message-type") {
-            Some(msg_type) => msg_type,
-            None => {
-                warn!("Received message with no message-type header");
-                return Ok(());
+        // Check message type - it can be either string or integer
+        match message.get_header(":message-type") {
+            Some(HeaderValue::String(msg_type)) => {
+                trace!("Received string message type: {}", msg_type);
+                if msg_type == "StreamEvent" {
+                    self.handle_stream_event(message).await?;
+                } else if msg_type == "Response" {
+                    self.handle_response(message).await?;
+                } else if msg_type == "Error" {
+                    self.handle_error(message).await?;
+                } else if msg_type == "Ping" {
+                    self.handle_ping(message).await?;
+                } else if msg_type == "Pong" {
+                    // Nothing to do for pong
+                } else {
+                    warn!("Received unknown string message type: {}", msg_type);
+                }
             }
-        };
-
-        if message_type == MESSAGE_TYPE_CONNECT_ACK {
-            self.handle_connect_ack(message).await?;
-        } else if message_type == "StreamEvent" {
-            self.handle_stream_event(message).await?;
-        } else if message_type == "Response" {
-            self.handle_response(message).await?;
-        } else if message_type == "Error" {
-            self.handle_error(message).await?;
-        } else if message_type == "Ping" {
-            self.handle_ping(message).await?;
-        } else if message_type == "Pong" {
-            // Nothing to do for pong
-        } else {
-            warn!("Received unknown message type: {}", message_type);
+            Some(HeaderValue::I32(msg_type)) => {
+                trace!("Received integer message type: {}", msg_type);
+                match *msg_type {
+                    0 => {
+                        // APPLICATION_MESSAGE
+                        self.handle_stream_event(message).await?;
+                    }
+                    1 => {
+                        // APPLICATION_ERROR
+                        self.handle_error(message).await?;
+                    }
+                    2 => {
+                        // PING
+                        self.handle_ping(message).await?;
+                    }
+                    3 => {
+                        // PING_RESPONSE (PONG)
+                        // Nothing to do for pong
+                    }
+                    4 => {
+                        // CONNECT - shouldn't receive this as a client
+                        warn!("Received CONNECT message as client");
+                    }
+                    5 => {
+                        // CONNECT_ACK - shouldn't reach here, handled in connect flow
+                        warn!("Received CONNECT_ACK outside of connection flow");
+                    }
+                    6 => {
+                        // PROTOCOL_ERROR
+                        error!("Received PROTOCOL_ERROR from server");
+                        if let Some(error_code) = message.get_string_header(":error-code") {
+                            error!("Protocol error code: {}", error_code);
+                        }
+                        if let Some(error_message) = message.get_string_header(":error-message") {
+                            error!("Protocol error message: {}", error_message);
+                        }
+                        
+                        // Log the payload if present
+                        if !message.payload.is_empty() {
+                            error!("Protocol error payload: {}", String::from_utf8_lossy(&message.payload));
+                        }
+                        
+                        return Err(Error::ProtocolError(format!(
+                            "Server sent protocol error: {:?}", message.headers
+                        )));
+                    }
+                    7 => {
+                        // INTERNAL_ERROR
+                        error!("Received INTERNAL_ERROR from server");
+                        return Err(Error::ProtocolError("Server internal error".to_string()));
+                    }
+                    _ => {
+                        warn!("Received unknown integer message type: {}", msg_type);
+                    }
+                }
+            }
+            _ => {
+                warn!("Received message with no or invalid message-type header");
+                warn!("Available headers: {:?}", message.headers.keys().collect::<Vec<_>>());
+            }
         }
 
         Ok(())
     }
 
     /// Handle a CONNECT_ACK message
-    async fn handle_connect_ack(&self, message: EventStreamMessage) -> Result<()> {
+    async fn handle_connect_ack(
+        &self,
+        message: EventStreamMessage,
+        connect_ack_tx: oneshot::Sender<Result<()>>,
+    ) -> Result<()> {
         let current_state = *self.state.read().await;
 
         if current_state != ConnectionState::WaitingForConnectAck {
             warn!("Received CONNECT_ACK in invalid state: {:?}", current_state);
+            // Complete the channel anyway to avoid hanging
+            let _ = connect_ack_tx.send(Err(Error::InvalidOperation(format!(
+                "Received CONNECT_ACK in invalid state: {:?}",
+                current_state
+            ))));
             return Ok(());
         }
 
         // Check if connection was accepted
         if let Some(HeaderValue::String(flags)) = message.get_header(":connection-accept") {
             if flags != "true" {
-                return Err(Error::AuthenticationError(
-                    "Connection access denied".to_string(),
-                ));
+                let err = Error::AuthenticationError("Connection access denied".to_string());
+
+                // Complete the channel with an error
+                let _ = connect_ack_tx.send(Err(err.clone()));
+
+                return Err(err);
             }
         }
 
@@ -557,11 +647,8 @@ impl Connection {
             *state = ConnectionState::Connected;
         }
 
-        // Complete the connect future
-        let mut connect_future = self.connect_future.write().await;
-        if let Some(sender) = connect_future.take() {
-            let _ = sender.send(Ok(()));
-        }
+        // Signal successful connection via the oneshot channel
+        let _ = connect_ack_tx.send(Ok(()));
 
         // Notify lifecycle handler
         if let Some(handler) = &self.lifecycle_handler {
@@ -686,36 +773,17 @@ impl Connection {
         Ok(())
     }
 
-    /// Handle disconnection
+    /// Handle disconnection - notifies stream handlers and the lifecycle handler
     async fn handle_disconnection(&self, reason: Error) {
         debug!("Handling disconnection: {}", reason);
 
-        // Update state
+        // Update state to disconnected if not already
         {
             let mut state = self.state.write().await;
-
-            // Only process if we're not already disconnected
             if *state == ConnectionState::Disconnected {
                 return;
             }
-
             *state = ConnectionState::Disconnected;
-        }
-
-        // Complete the connect future if it exists
-        {
-            let mut connect_future = self.connect_future.write().await;
-            if let Some(sender) = connect_future.take() {
-                let _ = sender.send(Err(reason.clone()));
-            }
-        }
-
-        // Complete the closed future
-        {
-            let mut closed_future = self.closed_future.write().await;
-            if let Some(sender) = closed_future.take() {
-                let _ = sender.send(Err(reason.clone()));
-            }
         }
 
         // Notify all stream handlers
@@ -728,7 +796,8 @@ impl Connection {
 
         // Notify lifecycle handler
         if let Some(handler) = &self.lifecycle_handler {
-            handler.on_disconnect(Some(&ConnectionError::Other(reason.to_string())));
+            let conn_error = ConnectionError::Other(reason.to_string());
+            handler.on_disconnect(Some(&conn_error));
         }
     }
 }

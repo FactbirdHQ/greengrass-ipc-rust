@@ -1,10 +1,15 @@
 use greengrass_ipc_rust::{connect, Result};
+use log::LevelFilter;
 use std::time::Duration;
 use tokio::time::sleep;
 
 /// A simple example demonstrating the use of the Greengrass IPC client
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::builder()
+        .filter_level(LevelFilter::Trace)
+        .init();
+
     // Connect to the Greengrass Core IPC service
     let client = match connect().await {
         Ok(client) => {
@@ -19,7 +24,7 @@ async fn main() -> Result<()> {
     };
 
     // Example topic for pub/sub
-    let topic = "topic/local/pubsub";
+    let topic = "/test";
 
     // Example message
     let message = format!(
@@ -27,7 +32,7 @@ async fn main() -> Result<()> {
         chrono::Local::now().to_rfc3339()
     );
 
-    // // Subscribe to the topic
+    // Subscribe to the topic
     // println!("Subscribing to topic: {}", topic);
     // let subscription = client
     //     .subscribe_to_topic(topic, |msg| async move {
@@ -60,8 +65,8 @@ async fn main() -> Result<()> {
     }
 
     // Keep the application running for a while to receive messages
-    println!("Waiting for messages...");
-    sleep(Duration::from_secs(10)).await;
+    // println!("Waiting for messages...");
+    // sleep(Duration::from_secs(10)).await;
 
     println!("Exiting example");
     Ok(())

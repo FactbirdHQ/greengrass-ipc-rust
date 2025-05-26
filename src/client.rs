@@ -2,8 +2,8 @@
 //!
 //! This module provides the main client interface for the Greengrass Core IPC service.
 
-use std::path::PathBuf;
 use crate::operation::Operation;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,11 +76,7 @@ impl GreengrassCoreIPCClient {
 
     /// Close the connection to the Greengrass Core IPC service
     pub async fn close(&self) -> Result<()> {
-        let close_future = self.connection.close(None).await?;
-        match close_future.await {
-            Ok(result) => result,
-            Err(_) => Err(Error::ConnectionClosed("Error waiting for connection to close".to_string())),
-        }
+        self.connection.close(None).await
     }
 
     /// Check if the client is connected
@@ -118,14 +114,14 @@ impl GreengrassCoreIPCClient {
     ) -> Result<PublishToTopicResponse> {
         // Create a unique operation ID for this request
         let operation_id = format!("publish-to-topic-{}", uuid::Uuid::new_v4());
-        
+
         // Create a oneshot channel for the response
         let (_response_sender, response_receiver) = tokio::sync::oneshot::channel();
-        
+
         // Serialize the request to JSON
         let request_json = serde_json::to_string(&request)
             .map_err(|e| Error::SerializationError(e.to_string()))?;
-        
+
         // Create the event stream message
         // In a real implementation, this would include proper headers and framing
         // based on the AWS event stream protocol
@@ -134,22 +130,30 @@ impl GreengrassCoreIPCClient {
             operation_id,
             request_json
         );
-        
+
         // Register the response handler
         // This would be handled by the connection's message routing system
         // which we'll assume exists as part of the Connection implementation
         // TODO: Implement a proper message routing system in the Connection
-        
+
         // Send the message over the connection
         // Create an event stream message to send
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(":operation".to_string(), crate::event_stream::HeaderValue::String("aws.greengrass#PublishToTopic".to_string()))
-            .with_header(":content-type".to_string(), crate::event_stream::HeaderValue::String("application/json".to_string()))
+            .with_header(
+                ":operation".to_string(),
+                crate::event_stream::HeaderValue::String(
+                    "aws.greengrass#PublishToTopic".to_string(),
+                ),
+            )
+            .with_header(
+                ":content-type".to_string(),
+                crate::event_stream::HeaderValue::String("application/json".to_string()),
+            )
             .with_payload(message.as_bytes().to_vec());
-            
+
         self.connection.send_message(&event_message).await?;
-        
+
         // Create an operation that will resolve when the response is received
         let operation = Operation::new(
             self.connection.clone(),
@@ -157,7 +161,7 @@ impl GreengrassCoreIPCClient {
             response_receiver,
             self.operation_timeout,
         );
-        
+
         // Return the result of the operation
         operation.get_result().await
     }
