@@ -15,7 +15,7 @@ mod operation;
 
 use std::time::Duration;
 
-pub use client::GreengrassCoreIPCClient;
+pub use client::{GreengrassCoreIPCClient, Subscription};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
 pub use model::{BinaryMessage, JsonMessage, Message, MessageContext, SubscriptionResponseMessage};

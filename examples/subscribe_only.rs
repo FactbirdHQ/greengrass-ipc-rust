@@ -1,7 +1,6 @@
 use greengrass_ipc_rust::{connect, Message, Result};
+use futures::StreamExt;
 use log::LevelFilter;
-use std::time::Duration;
-use tokio::time::sleep;
 
 /// A simple example demonstrating subscription to a Greengrass IPC topic
 #[tokio::main]
@@ -27,31 +26,30 @@ async fn main() -> Result<()> {
 
     // Subscribe to the topic
     println!("Subscribing to topic: {}", topic);
-    let _subscription = client
-        .subscribe_to_topic(topic, |msg| async move {
-            match msg.message {
-                Message::Json(json_message) => {
-                    println!("Received JSON message: {:?}", json_message.message);
-                }
-                Message::Binary(binary_message) => {
-                    let message_str = String::from_utf8_lossy(&binary_message.message);
-                    println!("Received message: {}", message_str);
-                }
-            }
-        })
-        .await;
-
-    match _subscription {
-        Ok(_) => println!("Successfully subscribed to topic: {}", topic),
+    let mut subscription = match client.subscribe_to_topic(topic).await {
+        Ok(subscription) => {
+            println!("Successfully subscribed to topic: {}", topic);
+            subscription
+        }
         Err(e) => {
             eprintln!("Failed to subscribe to topic: {}: {}", topic, e);
             return Err(e);
         }
-    }
+    };
 
-    // Keep the application running to receive messages
+    // Listen for messages using the Stream API
     println!("Waiting for messages... Press Ctrl+C to exit");
-    loop {
-        sleep(Duration::from_secs(1)).await;
+    while let Some(msg) = subscription.next().await {
+        match msg.message {
+            Message::Json(json_message) => {
+                println!("Received JSON message: {:?}", json_message.message);
+            }
+            Message::Binary(binary_message) => {
+                let message_str = String::from_utf8_lossy(&binary_message.message);
+                println!("Received message: {}", message_str);
+            }
+        }
     }
+    
+    Ok(())
 }

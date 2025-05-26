@@ -3,18 +3,21 @@
 //! This module provides the main client interface for the Greengrass Core IPC service.
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
+
+use futures::Stream;
+use tokio::sync::mpsc;
 
 use crate::connection::Connection;
 use crate::error::{Error, Result};
-use crate::event_stream::StreamResponseHandler;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
     BinaryMessage, Message, PublishToTopicRequest, PublishToTopicResponse, SubscribeToTopicRequest,
     SubscribeToTopicResponse, SubscriptionResponseMessage,
 };
-use crate::operation::StreamOperation;
 
 /// Default timeout for operations in seconds
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -224,47 +227,34 @@ impl GreengrassCoreIPCClient {
         Ok(response)
     }
 
-    /// Subscribe to a topic
-    pub async fn subscribe_to_topic<F, Fut>(
-        &self,
-        topic: &str,
-        callback: F,
-    ) -> Result<StreamOperation<SubscribeToTopicResponse, std::sync::Arc<SubscriptionHandler<F, Fut>>>>
-    where
-        F: Fn(SubscriptionResponseMessage) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        // Create a subscription handler with the callback
-        let handler = std::sync::Arc::new(SubscriptionHandler::new(callback));
-
+    /// Subscribe to a topic and return a Stream of messages
+    pub async fn subscribe_to_topic(&self, topic: &str) -> Result<Subscription> {
         // Create the request
         let request = SubscribeToTopicRequest {
             topic: topic.to_string(),
             receive_mode: None,
         };
 
-        // Subscribe with the handler
-        self.subscribe_to_topic_with_handler(request, handler).await
+        self.subscribe_to_topic_with_request(request).await
     }
 
-    /// Subscribe to a topic with a custom handler
-    pub async fn subscribe_to_topic_with_handler<H>(
+    /// Subscribe to a topic with a custom request and return a Stream of messages
+    pub async fn subscribe_to_topic_with_request(
         &self,
         request: SubscribeToTopicRequest,
-        handler: std::sync::Arc<H>,
-    ) -> Result<StreamOperation<SubscribeToTopicResponse, std::sync::Arc<H>>>
-    where
-        H: StreamResponseHandler + 'static,
-    {
+    ) -> Result<Subscription> {
         // Create a unique stream ID for this operation
         let stream_id = self.connection.allocate_stream_id().await?;
-        
-        // Create a unique operation ID 
+
+        // Create a unique operation ID
         let operation_id = uuid::Uuid::new_v4().to_string();
 
-        // Create channels for the response and close control
+        // Create channels for the response and message delivery
         let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
-        let (close_sender, close_receiver) = tokio::sync::mpsc::channel(1);
+        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+
+        // Create the subscription handler
+        let handler = SubscriptionMessageHandler::new(message_sender);
 
         // Register the response handler for the initial subscribe response
         self.connection
@@ -272,10 +262,7 @@ impl GreengrassCoreIPCClient {
             .await?;
 
         // Register the stream handler for ongoing subscription messages
-        let stream_handler = Box::new(SubscriptionStreamWrapper::new(
-            operation_id.clone(), 
-            handler.clone()
-        ));
+        let stream_handler = Box::new(handler);
         self.connection
             .register_stream_handler(operation_id.clone(), stream_handler)
             .await?;
@@ -327,7 +314,11 @@ impl GreengrassCoreIPCClient {
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
-        log::debug!("Sending SubscribeToTopic operation on stream {} with operation ID {}", stream_id, operation_id);
+        log::debug!(
+            "Sending SubscribeToTopic operation on stream {} with operation ID {}",
+            stream_id,
+            operation_id
+        );
         log::trace!("Message headers: {:?}", event_message.headers);
         log::trace!(
             "Message payload: {}",
@@ -338,35 +329,57 @@ impl GreengrassCoreIPCClient {
             Ok(()) => log::debug!("SubscribeToTopic message sent successfully"),
             Err(e) => {
                 log::error!("Failed to send SubscribeToTopic message: {}", e);
-                let _ = self.connection.unregister_stream_handler(&operation_id).await;
+                let _ = self
+                    .connection
+                    .unregister_stream_handler(&operation_id)
+                    .await;
                 return Err(e);
             }
         }
 
         // Wait for the initial response
-        log::debug!("Waiting for SubscribeToTopic response on stream {}...", stream_id);
-        
-        let response_json = match tokio::time::timeout(self.operation_timeout, response_receiver).await {
-            Ok(Ok(Ok(json_str))) => {
-                log::debug!("Received SubscribeToTopic response for stream {}: {}", stream_id, json_str);
-                json_str
-            }
-            Ok(Ok(Err(e))) => {
-                log::error!("Error response for stream {}: {}", stream_id, e);
-                let _ = self.connection.unregister_stream_handler(&operation_id).await;
-                return Err(e);
-            }
-            Ok(Err(_)) => {
-                log::error!("Response channel closed for stream {}", stream_id);
-                let _ = self.connection.unregister_stream_handler(&operation_id).await;
-                return Err(Error::ConnectionClosed("Response channel closed".to_string()));
-            }
-            Err(_) => {
-                log::error!("Timeout waiting for response on stream {}", stream_id);
-                let _ = self.connection.unregister_stream_handler(&operation_id).await;
-                return Err(Error::OperationTimeout);
-            }
-        };
+        log::debug!(
+            "Waiting for SubscribeToTopic response on stream {}...",
+            stream_id
+        );
+
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!(
+                        "Received SubscribeToTopic response for stream {}: {}",
+                        stream_id,
+                        json_str
+                    );
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    let _ = self
+                        .connection
+                        .unregister_stream_handler(&operation_id)
+                        .await;
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    let _ = self
+                        .connection
+                        .unregister_stream_handler(&operation_id)
+                        .await;
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    let _ = self
+                        .connection
+                        .unregister_stream_handler(&operation_id)
+                        .await;
+                    return Err(Error::OperationTimeout);
+                }
+            };
 
         // Check if this is an error response
         if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
@@ -380,7 +393,10 @@ impl GreengrassCoreIPCClient {
                         .unwrap_or("No error message")
                 );
                 log::error!("SubscribeToTopic failed: {}", error_msg);
-                let _ = self.connection.unregister_stream_handler(&operation_id).await;
+                let _ = self
+                    .connection
+                    .unregister_stream_handler(&operation_id)
+                    .await;
                 return Err(Error::ServiceError(
                     error_code.as_str().unwrap_or("Unknown").to_string(),
                     error_msg,
@@ -389,148 +405,121 @@ impl GreengrassCoreIPCClient {
         }
 
         // Deserialize the response as success
-        let _response: SubscribeToTopicResponse = serde_json::from_str(&response_json).map_err(|e| {
-            Error::SerializationError(format!("Failed to deserialize SubscribeToTopic response: {}", e))
-        })?;
+        let _response: SubscribeToTopicResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!(
+                    "Failed to deserialize SubscribeToTopic response: {}",
+                    e
+                ))
+            })?;
 
         log::info!("Successfully subscribed to topic: {}", request.topic);
 
-        // Create a dummy response receiver since we already handled the response
-        let (_dummy_sender, dummy_receiver) = tokio::sync::oneshot::channel();
-        
-        // Create the stream operation that represents the subscription
-        let stream_operation = StreamOperation::new(
+        // Create the subscription
+        Ok(Subscription::new(
             self.connection.clone(),
-            operation_id.clone(),
-            dummy_receiver,
-            handler.clone(),
-            close_sender,
-            self.operation_timeout,
-        );
+            operation_id,
+            message_receiver,
+        ))
+    }
+}
 
-        // Start the stream task to handle close requests
-        let connection_clone = self.connection.clone();
-        let operation_id_clone = operation_id.clone();
+/// A Stream-based subscription that yields messages from a subscribed topic
+pub struct Subscription {
+    connection: std::sync::Arc<Connection>,
+    operation_id: String,
+    message_receiver: mpsc::UnboundedReceiver<SubscriptionResponseMessage>,
+}
+
+impl Subscription {
+    fn new(
+        connection: std::sync::Arc<Connection>,
+        operation_id: String,
+        message_receiver: mpsc::UnboundedReceiver<SubscriptionResponseMessage>,
+    ) -> Self {
+        Self {
+            connection,
+            operation_id,
+            message_receiver,
+        }
+    }
+}
+
+impl Stream for Subscription {
+    type Item = SubscriptionResponseMessage;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.message_receiver.poll_recv(cx)
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        log::debug!("Dropping subscription for operation {}", self.operation_id);
+        let connection = self.connection.clone();
+        let operation_id = self.operation_id.clone();
+
+        // Spawn a cleanup task since Drop cannot be async
         tokio::spawn(async move {
-            let mut close_receiver = close_receiver;
-            if let Some(_) = close_receiver.recv().await {
-                log::debug!("Closing subscription stream for operation {}", operation_id_clone);
-                let _ = connection_clone.unregister_stream_handler(&operation_id_clone).await;
+            if let Err(e) = connection.unregister_stream_handler(&operation_id).await {
+                log::warn!("Failed to unregister stream handler during drop: {}", e);
             }
         });
-
-        Ok(stream_operation)
     }
 }
 
-// Implement StreamResponseHandler for Arc<H> where H: StreamResponseHandler
-impl<H: StreamResponseHandler> crate::event_stream::StreamResponseHandler for std::sync::Arc<H> {
-    fn on_stream_event(&self, message: &crate::event_stream::EventStreamMessage) {
-        (**self).on_stream_event(message)
-    }
+/// A handler that forwards subscription messages to a channel
+struct SubscriptionMessageHandler {
+    message_sender: mpsc::UnboundedSender<SubscriptionResponseMessage>,
+}
 
-    fn on_stream_error(&self, error: &Error) -> bool {
-        (**self).on_stream_error(error)
-    }
-
-    fn on_stream_closed(&self) {
-        (**self).on_stream_closed()
+impl SubscriptionMessageHandler {
+    fn new(message_sender: mpsc::UnboundedSender<SubscriptionResponseMessage>) -> Self {
+        Self { message_sender }
     }
 }
 
-/// A handler for subscription responses
-pub struct SubscriptionHandler<F, Fut>
-where
-    F: Fn(SubscriptionResponseMessage) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    callback: F,
-}
-
-impl<F, Fut> SubscriptionHandler<F, Fut>
-where
-    F: Fn(SubscriptionResponseMessage) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    /// Create a new subscription handler
-    pub fn new(callback: F) -> Self {
-        Self { callback }
-    }
-}
-
-impl<F, Fut> StreamResponseHandler for SubscriptionHandler<F, Fut>
-where
-    F: Fn(SubscriptionResponseMessage) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    fn on_stream_event(&self, message: &crate::event_stream::EventStreamMessage) {
-        // Deserialize the message payload to a SubscriptionResponseMessage
-        let payload_str = String::from_utf8_lossy(&message.payload);
-        log::debug!("Received subscription message: {}", payload_str);
-        
-        match serde_json::from_str::<SubscriptionResponseMessage>(&payload_str) {
-            Ok(subscription_message) => {
-                // Spawn a task to call the callback
-                let callback = &self.callback;
-                let future = callback(subscription_message);
-                tokio::spawn(future);
-            }
-            Err(e) => {
-                log::error!("Failed to deserialize subscription message: {}", e);
-                log::debug!("Raw message payload: {}", payload_str);
-            }
-        }
-    }
-
-    fn on_stream_error(&self, error: &Error) -> bool {
-        log::error!("Subscription stream error: {}", error);
-        // Default to closing the stream on error
-        true
-    }
-
-    fn on_stream_closed(&self) {
-        log::debug!("Subscription stream closed");
-    }
-}
-
-/// A wrapper handler that bridges the connection's StreamResponseHandler trait to our StreamResponseHandler
-struct SubscriptionStreamWrapper<H: StreamResponseHandler> {
-    operation_id: String,
-    handler: std::sync::Arc<H>,
-}
-
-impl<H: StreamResponseHandler> SubscriptionStreamWrapper<H> {
-    fn new(operation_id: String, handler: std::sync::Arc<H>) -> Self {
-        Self {
-            operation_id,
-            handler,
-        }
-    }
-}
-
-impl<H: StreamResponseHandler> crate::connection::StreamResponseHandler for SubscriptionStreamWrapper<H> {
+impl crate::connection::StreamResponseHandler for SubscriptionMessageHandler {
     fn handle_message(&self, message: crate::event_stream::EventStreamMessage) -> Result<()> {
         // Check if this is a subscription response message by service model type
         if let Some(service_model) = message.get_string_header("service-model-type") {
             if service_model == "aws.greengrass#SubscriptionResponseMessage" {
-                log::debug!("Routing subscription message to handler for operation {}", self.operation_id);
-                self.handler.on_stream_event(&message);
+                // Deserialize the message payload to a SubscriptionResponseMessage
+                let payload_str = String::from_utf8_lossy(&message.payload);
+                log::debug!("Received subscription message: {}", payload_str);
+
+                match serde_json::from_str::<SubscriptionResponseMessage>(&payload_str) {
+                    Ok(subscription_message) => {
+                        // Send the message through the channel
+                        if let Err(_) = self.message_sender.send(subscription_message) {
+                            log::warn!("Failed to send subscription message - receiver dropped");
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to deserialize subscription message: {}", e);
+                        log::debug!("Raw message payload: {}", payload_str);
+                    }
+                }
                 return Ok(());
             }
         }
-        
+
         // For other message types, just log
-        log::debug!("Received non-subscription message on operation {}: {}", 
-                   self.operation_id, String::from_utf8_lossy(&message.payload));
+        log::debug!(
+            "Received non-subscription message: {}",
+            String::from_utf8_lossy(&message.payload)
+        );
         Ok(())
     }
 
     fn handle_error(&self, error: &Error) -> Result<bool> {
-        Ok(self.handler.on_stream_error(error))
+        log::error!("Subscription stream error: {}", error);
+        // Close the stream on error
+        Ok(true)
     }
 
     fn handle_closed(&self) -> Result<()> {
-        self.handler.on_stream_closed();
+        log::debug!("Subscription stream closed");
         Ok(())
     }
 }

@@ -1,7 +1,8 @@
+use futures::StreamExt;
 use greengrass_ipc_rust::{connect, Message, Result};
 use log::LevelFilter;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::timeout;
 
 /// A simple example demonstrating the use of the Greengrass IPC client
 #[tokio::main]
@@ -31,24 +32,16 @@ async fn main() -> Result<()> {
 
     // Subscribe to the topic
     println!("Subscribing to topic: {}", topic);
-    let subscription = client
-        .subscribe_to_topic(topic, |msg| async move {
-            match msg.message {
-                Message::Json(json_message) => {
-                    println!("Received JSON message: {:?}", json_message.message);
-                }
-                Message::Binary(binary_message) => {
-                    let message_str = String::from_utf8_lossy(&binary_message.message);
-                    println!("Received message: {}", message_str);
-                }
-            }
-        })
-        .await;
-
-    match subscription {
-        Ok(_) => println!("Successfully subscribed to topic: {}", topic),
-        Err(e) => eprintln!("Failed to subscribe to topic: {}: {}", topic, e),
-    }
+    let mut subscription = match client.subscribe_to_topic(topic).await {
+        Ok(subscription) => {
+            println!("Successfully subscribed to topic: {}", topic);
+            subscription
+        }
+        Err(e) => {
+            eprintln!("Failed to subscribe to topic: {}: {}", topic, e);
+            return Err(e);
+        }
+    };
 
     // Publish a message to the topic
     println!("Publishing message to topic: {}", topic);
@@ -66,9 +59,25 @@ async fn main() -> Result<()> {
         Err(e) => eprintln!("Failed to publish message to topic: {}: {}", topic, e),
     }
 
-    // Keep the application running for a while to receive messages
+    // Listen for messages using the Stream API
     println!("Waiting for messages...");
-    sleep(Duration::from_secs(10)).await;
+    let message_timeout = timeout(Duration::from_secs(10), async {
+        while let Some(msg) = subscription.next().await {
+            match msg.message {
+                Message::Json(json_message) => {
+                    println!("Received JSON message: {:?}", json_message.message);
+                }
+                Message::Binary(binary_message) => {
+                    let message_str = String::from_utf8_lossy(&binary_message.message);
+                    println!("Received message: {}", message_str);
+                }
+            }
+        }
+    });
+
+    if let Err(_) = message_timeout.await {
+        println!("Timeout waiting for messages");
+    }
 
     println!("Exiting example");
     Ok(())
