@@ -61,11 +61,6 @@ impl GreengrassCoreIPCClient {
         })
     }
 
-    /// Get a reference to the connection
-    pub fn connection(&self) -> &Arc<Connection> {
-        &self.connection
-    }
-
     /// Set the timeout for operations
     pub fn set_operation_timeout(&mut self, timeout: Duration) {
         self.operation_timeout = timeout;
@@ -79,12 +74,6 @@ impl GreengrassCoreIPCClient {
     /// Close the connection to the Greengrass Core IPC service
     pub async fn close(&self) -> Result<()> {
         self.connection.close(None).await
-    }
-
-    /// Check if the client is connected
-    pub fn is_connected(&self) -> bool {
-        // This is a placeholder - in a real implementation we would check the connection status
-        true
     }
 
     /// Create a new publish to topic operation
@@ -102,15 +91,6 @@ impl GreengrassCoreIPCClient {
             }),
         };
 
-        // Send the request
-        self.publish_to_topic_with_request(request).await
-    }
-
-    /// Create a new publish to topic operation with a custom request
-    pub async fn publish_to_topic_with_request(
-        &self,
-        request: PublishToTopicRequest,
-    ) -> Result<PublishToTopicResponse> {
         // Create a unique stream ID for this operation
         let stream_id = self.connection.allocate_stream_id().await?;
 
@@ -235,14 +215,6 @@ impl GreengrassCoreIPCClient {
             receive_mode: None,
         };
 
-        self.subscribe_to_topic_with_request(request).await
-    }
-
-    /// Subscribe to a topic with a custom request and return a Stream of messages
-    pub async fn subscribe_to_topic_with_request(
-        &self,
-        request: SubscribeToTopicRequest,
-    ) -> Result<Subscription> {
         // Create a unique stream ID for this operation
         let stream_id = self.connection.allocate_stream_id().await?;
 
