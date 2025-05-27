@@ -15,12 +15,13 @@ mod operation;
 
 use std::time::Duration;
 
-pub use client::{GreengrassCoreIPCClient, Subscription};
+pub use client::{GreengrassCoreIPCClient, Subscription, IoTCoreSubscription};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
 pub use model::{
-    BinaryMessage, JsonMessage, Message, MessageContext, PublishToIoTCoreRequest, 
-    PublishToIoTCoreResponse, QoS, SubscriptionResponseMessage,
+    BinaryMessage, JsonMessage, Message, MessageContext, PublishToIoTCoreRequest,
+    PublishToIoTCoreResponse, QoS, SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse,
+    SubscriptionResponseMessage, IoTCoreMessage, MqttMessage,
 };
 
 /// Connect to the Greengrass Core IPC service with default parameters.

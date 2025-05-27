@@ -240,7 +240,7 @@ pub struct MqttMessage {
     pub topic_name: String,
 
     /// The payload
-    #[serde_as(as = "BytesAsVec")]
+    #[serde_as(as = "Base64")]
     pub payload: Bytes,
 
     /// The user properties
