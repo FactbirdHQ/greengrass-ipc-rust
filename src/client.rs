@@ -111,34 +111,16 @@ impl GreengrassCoreIPCClient {
         // Create the event stream message following AWS Event Stream RPC protocol
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(
-                ":message-type".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
-            )
-            .with_header(
-                ":stream-id".to_string(),
-                crate::event_stream::HeaderValue::I32(stream_id),
-            )
-            .with_header(
-                ":message-flags".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // No flags
-            )
-            .with_header(
-                ":content-type".to_string(),
-                crate::event_stream::HeaderValue::String("application/json".to_string()),
-            )
-            .with_header(
-                "operation".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#PublishToTopic".to_string(),
-                ),
-            )
-            .with_header(
-                "service-model-type".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#PublishToTopicRequest".to_string(),
-                ),
-            )
+            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(crate::event_stream::Header::StreamId(stream_id))
+            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
+            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::Operation(
+                "aws.greengrass#PublishToTopic".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::ServiceModelType(
+                "aws.greengrass#PublishToTopicRequest".to_string(),
+            ))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -251,40 +233,20 @@ impl GreengrassCoreIPCClient {
             .map_err(|e| Error::SerializationError(e.to_string()))?;
 
         // Create the event stream message following AWS Event Stream RPC protocol
-        let mut event_message = crate::event_stream::EventStreamMessage::new();
-        event_message = event_message
-            .with_header(
-                ":message-type".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
-            )
-            .with_header(
-                ":stream-id".to_string(),
-                crate::event_stream::HeaderValue::I32(stream_id),
-            )
-            .with_header(
-                ":message-flags".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // No flags
-            )
-            .with_header(
-                ":content-type".to_string(),
-                crate::event_stream::HeaderValue::String("application/json".to_string()),
-            )
-            .with_header(
-                "operation".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#SubscribeToTopic".to_string(),
-                ),
-            )
-            .with_header(
-                "service-model-type".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#SubscribeToTopicRequest".to_string(),
-                ),
-            )
-            .with_header(
-                ":operation-id".to_string(),
-                crate::event_stream::HeaderValue::String(operation_id.clone()),
-            )
+        // Create subscription message
+        let mut subscribe_message = crate::event_stream::EventStreamMessage::new();
+        subscribe_message = subscribe_message
+            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(crate::event_stream::Header::StreamId(stream_id))
+            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
+            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::Operation(
+                "aws.greengrass#SubscribeToTopic".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::ServiceModelType(
+                "aws.greengrass#SubscribeToTopicRequest".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -293,13 +255,13 @@ impl GreengrassCoreIPCClient {
             stream_id,
             operation_id
         );
-        log::trace!("Message headers: {:?}", event_message.headers);
+        log::trace!("Message headers: {:?}", subscribe_message.headers);
         log::trace!(
             "Message payload: {}",
-            String::from_utf8_lossy(&event_message.payload)
+            String::from_utf8_lossy(&subscribe_message.payload)
         );
 
-        match self.connection.send_message(&event_message).await {
+        match self.connection.send_message(&subscribe_message).await {
             Ok(()) => log::debug!("SubscribeToTopic message sent successfully"),
             Err(e) => {
                 log::error!("Failed to send SubscribeToTopic message: {}", e);
@@ -420,34 +382,16 @@ impl GreengrassCoreIPCClient {
         // Create the event stream message following AWS Event Stream RPC protocol
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(
-                ":message-type".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
-            )
-            .with_header(
-                ":stream-id".to_string(),
-                crate::event_stream::HeaderValue::I32(stream_id),
-            )
-            .with_header(
-                ":message-flags".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // No flags
-            )
-            .with_header(
-                ":content-type".to_string(),
-                crate::event_stream::HeaderValue::String("application/json".to_string()),
-            )
-            .with_header(
-                "operation".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#PublishToIoTCore".to_string(),
-                ),
-            )
-            .with_header(
-                "service-model-type".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#PublishToIoTCoreRequest".to_string(),
-                ),
-            )
+            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(crate::event_stream::Header::StreamId(stream_id))
+            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
+            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::Operation(
+                "aws.greengrass#PublishToIoTCore".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::ServiceModelType(
+                "aws.greengrass#PublishToIoTCoreRequest".to_string(),
+            ))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -866,40 +810,20 @@ impl GreengrassCoreIPCClient {
             .map_err(|e| Error::SerializationError(e.to_string()))?;
 
         // Create the event stream message following AWS Event Stream RPC protocol
-        let mut event_message = crate::event_stream::EventStreamMessage::new();
-        event_message = event_message
-            .with_header(
-                ":message-type".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
-            )
-            .with_header(
-                ":stream-id".to_string(),
-                crate::event_stream::HeaderValue::I32(stream_id),
-            )
-            .with_header(
-                ":message-flags".to_string(),
-                crate::event_stream::HeaderValue::I32(0), // No flags
-            )
-            .with_header(
-                ":content-type".to_string(),
-                crate::event_stream::HeaderValue::String("application/json".to_string()),
-            )
-            .with_header(
-                "operation".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#SubscribeToIoTCore".to_string(),
-                ),
-            )
-            .with_header(
-                "service-model-type".to_string(),
-                crate::event_stream::HeaderValue::String(
-                    "aws.greengrass#SubscribeToIoTCoreRequest".to_string(),
-                ),
-            )
-            .with_header(
-                ":operation-id".to_string(),
-                crate::event_stream::HeaderValue::String(operation_id.clone()),
-            )
+        // Create subscription message
+        let mut subscribe_message = crate::event_stream::EventStreamMessage::new();
+        subscribe_message = subscribe_message
+            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(crate::event_stream::Header::StreamId(stream_id))
+            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
+            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::Operation(
+                "aws.greengrass#SubscribeToIoTCore".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::ServiceModelType(
+                "aws.greengrass#SubscribeToIoTCoreRequest".to_string(),
+            ))
+            .with_header(crate::event_stream::Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -908,13 +832,13 @@ impl GreengrassCoreIPCClient {
             stream_id,
             operation_id
         );
-        log::trace!("Message headers: {:?}", event_message.headers);
+        log::trace!("Message headers: {:?}", subscribe_message.headers);
         log::trace!(
             "Message payload: {}",
-            String::from_utf8_lossy(&event_message.payload)
+            String::from_utf8_lossy(&subscribe_message.payload)
         );
 
-        match self.connection.send_message(&event_message).await {
+        match self.connection.send_message(&subscribe_message).await {
             Ok(()) => log::debug!("SubscribeToIoTCore message sent successfully"),
             Err(e) => {
                 log::error!("Failed to send SubscribeToIoTCore message: {}", e);

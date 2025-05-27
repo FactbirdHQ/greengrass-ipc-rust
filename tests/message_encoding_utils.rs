@@ -8,7 +8,7 @@ use bytes::Bytes;
 use base64::Engine;
 
 // Import from our own crate
-use greengrass_ipc_rust::event_stream::{EventStreamMessage, HeaderValue};
+use greengrass_ipc_rust::event_stream::{EventStreamMessage, Header};
 
 // Define our own versions of these types for the tests
 pub struct MessageComparisonHarness {}
@@ -59,14 +59,23 @@ pub fn create_test_message(
     
     // Start with basic message
     let mut message = EventStreamMessage::new()
-        .with_header(":operation", HeaderValue::String(operation.to_string()))
-        .with_header(":message-type", HeaderValue::String(message_type.to_string()))
+        .with_header(Header::Operation(operation.to_string()))
+        .with_header(Header::MessageType(0)) // 0 for APPLICATION_MESSAGE
         .with_payload(payload);
     
     // Add any additional headers
     if let Some(headers) = additional_headers {
         for (name, value) in headers {
-            message = message.with_header(name, HeaderValue::String(value));
+            match name.as_str() {
+                ":version" => message = message.with_header(Header::Version(value)),
+                ":content-type" => message = message.with_header(Header::ContentType(value)),
+                "service-model-type" => message = message.with_header(Header::ServiceModelType(value)),
+                ":operation-id" => message = message.with_header(Header::OperationId(value)),
+                _ => {
+                    // For unknown headers, we'll skip them since we have a strongly typed system
+                    eprintln!("Warning: Skipping unknown header: {}", name);
+                }
+            }
         }
     }
     
@@ -438,12 +447,12 @@ mod tests {
         
         // Verify headers were set correctly
         assert_eq!(
-            message.get_header(":operation"),
-            Some(&HeaderValue::String("TestOperation".to_string()))
+            message.get_header("operation"),
+            Some(&Header::Operation("TestOperation".to_string()))
         );
         assert_eq!(
             message.get_header(":message-type"),
-            Some(&HeaderValue::String("Request".to_string()))
+            Some(&Header::MessageType(0))
         );
         
         // Verify payload was set correctly
@@ -455,9 +464,9 @@ mod tests {
         let message = create_publish_request("test/topic", "Hello, world!");
         
         // Verify operation and type headers
-        assert_eq!(message.message_type().unwrap(), "Request");
+        assert_eq!(message.message_type().unwrap(), 0);
         assert_eq!(
-            message.get_string_header(":operation").unwrap(),
+            message.get_string_header("operation").unwrap(),
             "PublishToTopic"
         );
         

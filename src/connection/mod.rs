@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::error::{Error, Result};
 use crate::event_stream::{
-    EventStreamMessage, HeaderValue, MESSAGE_TYPE_CONNECT_ACK,
+    EventStreamMessage,
 };
 use crate::lifecycle::{ConnectionError, LifecycleHandler};
 
@@ -253,22 +253,10 @@ impl Connection {
 
         let mut connect_message = EventStreamMessage::new();
         connect_message = connect_message
-            .with_header(
-                VERSION_HEADER.to_string(),
-                HeaderValue::String(VERSION_STRING.to_string()),
-            )
-            .with_header(
-                ":message-type".to_string(),
-                HeaderValue::I32(4), // CONNECT = 4
-            )
-            .with_header(
-                ":message-flags".to_string(),
-                HeaderValue::I32(0), // No flags
-            )
-            .with_header(
-                ":stream-id".to_string(),
-                HeaderValue::I32(0), // Protocol messages use stream-id 0
-            )
+            .with_header(crate::event_stream::Header::Version(VERSION_STRING.to_string()))
+            .with_header(crate::event_stream::Header::MessageType(4)) // CONNECT = 4
+            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
+            .with_header(crate::event_stream::Header::StreamId(0)) // Protocol messages use stream-id 0
             .with_payload(auth_payload.into_bytes());
 
         // Send the CONNECT message
@@ -501,8 +489,7 @@ impl Connection {
                         // Handle the message - if we need to pass the oneshot sender,
                         // we'll pass it and take ownership, otherwise we'll keep it
                         let is_connect_ack = match message.get_header(":message-type") {
-                            Some(HeaderValue::String(msg_type)) => msg_type == MESSAGE_TYPE_CONNECT_ACK,
-                            Some(HeaderValue::I32(5)) => true, // CONNECT_ACK = 5
+                            Some(crate::event_stream::Header::MessageType(5)) => true, // CONNECT_ACK = 5
                             _ => false,
                         };
 
@@ -557,30 +544,14 @@ impl Connection {
         trace!("Received message with {} headers", message.headers.len());
         
         // Debug: print all headers
-        for (name, value) in &message.headers {
-            trace!("Header: {} = {:?}", name, value);
+        for header in &message.headers {
+            trace!("Header: {} = {:?}", header.name(), header);
         }
 
-        // Check message type - it can be either string or integer
+        // Check message type
         match message.get_header(":message-type") {
-            Some(HeaderValue::String(msg_type)) => {
-                trace!("Received string message type: {}", msg_type);
-                if msg_type == "StreamEvent" {
-                    self.handle_stream_event(message).await?;
-                } else if msg_type == "Response" {
-                    self.handle_response(message).await?;
-                } else if msg_type == "Error" {
-                    self.handle_error(message).await?;
-                } else if msg_type == "Ping" {
-                    self.handle_ping(message).await?;
-                } else if msg_type == "Pong" {
-                    // Nothing to do for pong
-                } else {
-                    warn!("Received unknown string message type: {}", msg_type);
-                }
-            }
-            Some(HeaderValue::I32(msg_type)) => {
-                trace!("Received integer message type: {}", msg_type);
+            Some(crate::event_stream::Header::MessageType(msg_type)) => {
+                trace!("Received message type: {}", msg_type);
                 match *msg_type {
                     0 => {
                         // APPLICATION_MESSAGE - could be a response to an operation
@@ -637,7 +608,7 @@ impl Connection {
             }
             _ => {
                 warn!("Received message with no or invalid message-type header");
-                warn!("Available headers: {:?}", message.headers.keys().collect::<Vec<_>>());
+                warn!("Available headers: {:?}", message.headers.iter().map(|h| h.name()).collect::<Vec<_>>());
             }
         }
 
@@ -666,7 +637,7 @@ impl Connection {
     /// Handle an APPLICATION_MESSAGE (could be response to operation)
     async fn handle_application_message(&self, message: EventStreamMessage) -> Result<()> {
         // Get the stream ID from the message
-        if let Some(HeaderValue::I32(stream_id)) = message.get_header(":stream-id") {
+        if let Some(crate::event_stream::Header::StreamId(stream_id)) = message.get_header(":stream-id") {
             // Check if this is a response to one of our operations
             let mut handlers = self.operation_response_handlers.write().await;
             if let Some(sender) = handlers.remove(stream_id) {
@@ -705,7 +676,7 @@ impl Connection {
 
         // Check if connection was accepted by looking at message flags
         // CONNECTION_ACCEPTED flag = 0x01
-        if let Some(HeaderValue::I32(flags)) = message.get_header(":message-flags") {
+        if let Some(crate::event_stream::Header::MessageFlags(flags)) = message.get_header(":message-flags") {
             debug!("CONNECT_ACK flags: 0x{:x}", flags);
             if (flags & 0x01) == 0 {
                 let err = Error::AuthenticationError("Connection access denied".to_string());
@@ -746,7 +717,7 @@ impl Connection {
         // Try to extract operation ID directly first
         let operation_id = if let Some(id) = message.get_string_header(":operation-id") {
             id.to_string()
-        } else if let Some(HeaderValue::I32(stream_id)) = message.get_header(":stream-id") {
+        } else if let Some(crate::event_stream::Header::StreamId(stream_id)) = message.get_header(":stream-id") {
             // If no operation ID, try to map from stream ID (for subscriptions)
             let mapping = self.stream_to_operation_map.read().await;
             match mapping.get(stream_id) {
@@ -842,8 +813,7 @@ impl Connection {
         // Respond with a pong
         let mut pong = EventStreamMessage::new();
         pong = pong.with_header(
-            ":message-type".to_string(),
-            HeaderValue::String("Pong".to_string()),
+            crate::event_stream::Header::MessageType(5), // Use numeric PONG type
         );
 
         self.send_message(&pong).await?;
@@ -851,22 +821,16 @@ impl Connection {
         // Notify lifecycle handler
         if let Some(_handler) = &self.lifecycle_handler {
             // Convert to ConnectionError type expected by the lifecycle handler
-            let headers_vec: Vec<(String, String)> = message
+            let debug_headers: Vec<String> = message
                 .headers
                 .iter()
-                .filter_map(|(k, v)| {
-                    if let HeaderValue::String(s) = v {
-                        Some((k.clone(), s.clone()))
-                    } else {
-                        None
-                    }
-                })
+                .map(|header| format!("{}: {:?}", header.name(), header))
                 .collect();
 
             // Call ping handler with headers and payload
             // The LifecycleHandler doesn't have an on_ping method in this implementation
             // So we just log it
-            debug!("Received ping message with {} headers", headers_vec.len());
+            debug!("Received ping message with {} headers", debug_headers.len());
         }
 
         Ok(())

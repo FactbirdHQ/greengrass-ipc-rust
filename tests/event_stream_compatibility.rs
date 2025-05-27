@@ -1,14 +1,14 @@
-use greengrass_ipc_rust::event_stream::{EventStreamMessage, HeaderValue};
+use greengrass_ipc_rust::event_stream::{EventStreamMessage, Header};
 
 #[test]
 fn test_connect_message_format() {
     // Test that our CONNECT message format matches AWS expectations
     let mut connect_message = EventStreamMessage::new();
     connect_message = connect_message
-        .with_header(":version".to_string(), HeaderValue::String("0.1.0".to_string()))
-        .with_header(":message-type".to_string(), HeaderValue::I32(4)) // CONNECT = 4
-        .with_header(":message-flags".to_string(), HeaderValue::I32(0)) // No flags
-        .with_header(":stream-id".to_string(), HeaderValue::I32(0)) // Protocol messages use stream-id 0
+        .with_header(Header::Version("0.1.0".to_string()))
+        .with_header(Header::MessageType(4)) // CONNECT = 4
+        .with_header(Header::MessageFlags(0)) // No flags
+        .with_header(Header::StreamId(0)) // Protocol messages use stream-id 0
         .with_payload(r#"{"authToken": "test-token"}"#.as_bytes());
 
     // Verify the message can be encoded without errors
@@ -25,10 +25,10 @@ fn test_connect_message_format() {
     assert!(decoded.get_header(":version").is_some());
 
     // Verify message type is correct integer value
-    if let Some(HeaderValue::I32(msg_type)) = decoded.get_header(":message-type") {
+    if let Some(Header::MessageType(msg_type)) = decoded.get_header(":message-type") {
         assert_eq!(*msg_type, 4, "Message type should be 4 for CONNECT");
     } else {
-        panic!("Message type should be I32");
+        panic!("Message type should be MessageType");
     }
 
     // Verify payload is preserved
@@ -37,47 +37,45 @@ fn test_connect_message_format() {
 }
 
 #[test]
-fn test_header_type_encoding() {
-    // Test that header types match AWS Event Stream specification
+fn test_typed_headers() {
+    // Test that typed headers work correctly
     let mut message = EventStreamMessage::new();
     
-    // Add headers of different types
+    // Add typed headers
     message = message
-        .with_header("bool_true".to_string(), HeaderValue::Bool(true))
-        .with_header("bool_false".to_string(), HeaderValue::Bool(false))
-        .with_header("byte".to_string(), HeaderValue::I8(42))
-        .with_header("short".to_string(), HeaderValue::I16(1234))
-        .with_header("integer".to_string(), HeaderValue::I32(123456))
-        .with_header("long".to_string(), HeaderValue::I64(123456789))
-        .with_header("string".to_string(), HeaderValue::String("test".to_string()))
-        .with_header("bytes".to_string(), HeaderValue::Bytes(vec![1, 2, 3, 4]))
-        .with_header("timestamp".to_string(), HeaderValue::Timestamp(1234567890))
-        .with_header("uuid".to_string(), HeaderValue::Uuid([0; 16]));
+        .with_header(Header::Version("1.0.0".to_string()))
+        .with_header(Header::StreamId(42))
+        .with_header(Header::MessageType(1))
+        .with_header(Header::MessageFlags(0))
+        .with_header(Header::ContentType("application/json".to_string()))
+        .with_header(Header::Operation("TestOperation".to_string()))
+        .with_header(Header::ServiceModelType("TestModel".to_string()))
+        .with_header(Header::OperationId("op-123".to_string()));
 
     // Encode and decode
     let encoded = message.encode().expect("Should encode successfully");
     let decoded = EventStreamMessage::decode(&encoded).expect("Should decode successfully");
 
     // Verify all headers are preserved
-    assert_eq!(decoded.headers.len(), 10, "All headers should be preserved");
+    assert_eq!(decoded.headers.len(), 8, "All headers should be preserved");
 
     // Verify specific header values
-    if let Some(HeaderValue::Bool(val)) = decoded.get_header("bool_true") {
-        assert_eq!(*val, true);
+    if let Some(Header::Version(val)) = decoded.get_header(":version") {
+        assert_eq!(val, "1.0.0");
     } else {
-        panic!("bool_true header should be Bool(true)");
+        panic!("version header should be Version");
     }
 
-    if let Some(HeaderValue::String(val)) = decoded.get_header("string") {
-        assert_eq!(val, "test");
+    if let Some(Header::StreamId(val)) = decoded.get_header(":stream-id") {
+        assert_eq!(*val, 42);
     } else {
-        panic!("string header should be String");
+        panic!("stream-id header should be StreamId");
     }
 
-    if let Some(HeaderValue::I32(val)) = decoded.get_header("integer") {
-        assert_eq!(*val, 123456);
+    if let Some(Header::Operation(val)) = decoded.get_header("operation") {
+        assert_eq!(val, "TestOperation");
     } else {
-        panic!("integer header should be I32");
+        panic!("operation header should be Operation");
     }
 }
 
@@ -85,7 +83,7 @@ fn test_header_type_encoding() {
 fn test_message_crc_validation() {
     // Test that CRC validation works correctly
     let message = EventStreamMessage::new()
-        .with_header("test".to_string(), HeaderValue::String("value".to_string()))
+        .with_header(Header::Version("test-value".to_string()))
         .with_payload(b"test payload".to_vec());
 
     let encoded = message.encode().expect("Should encode successfully");

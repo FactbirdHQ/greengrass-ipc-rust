@@ -3,7 +3,6 @@
 //! This module implements the AWS Event Stream protocol used by the Greengrass IPC service.
 //! Event Stream is a binary protocol format that allows for bidirectional streaming of messages.
 
-use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
@@ -18,18 +17,7 @@ const PRELUDE_CRC_LENGTH: usize = 4;
 const TRAILER_LENGTH: usize = 4;
 const MIN_MESSAGE_LENGTH: usize = PRELUDE_LENGTH + PRELUDE_CRC_LENGTH + TRAILER_LENGTH;
 
-// Message type constants
-pub const MESSAGE_TYPE_REQUEST: &str = "Request";
-pub const MESSAGE_TYPE_RESPONSE: &str = "Response";
-pub const MESSAGE_TYPE_STREAM: &str = "StreamEvent";
-pub const MESSAGE_TYPE_ERROR: &str = "Error";
-pub const MESSAGE_TYPE_PING: &str = "Ping";
-pub const MESSAGE_TYPE_PONG: &str = "Pong";
-pub const MESSAGE_TYPE_CONNECT: &str = "Connect";
-pub const MESSAGE_TYPE_CONNECT_ACK: &str = "ConnectAck";
-
-/// A header in an Event Stream message
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum HeaderValue {
     /// A boolean value
     Bool(bool),
@@ -59,38 +47,185 @@ pub enum HeaderValue {
     Uuid([u8; 16]),
 }
 
+/// Strongly-typed headers for the Event Stream protocol
+#[derive(Debug, Clone, PartialEq)]
+pub enum Header {
+    /// Protocol version (":version")
+    Version(String),
+    /// Stream identifier (":stream-id")
+    StreamId(i32),
+    /// Message type (":message-type")
+    MessageType(i32),
+    /// Message flags (":message-flags")
+    MessageFlags(i32),
+    /// Content type (":content-type")
+    ContentType(String),
+    /// Operation name ("operation")
+    Operation(String),
+    /// Service model type ("service-model-type")
+    ServiceModelType(String),
+    /// Operation identifier (":operation-id")
+    OperationId(String),
+}
+
+impl Header {
+    // type code for string
+    const STRING_TYPE: u8 = 7;
+
+    /// Get the header name as used in the protocol
+    pub fn name(&self) -> &'static str {
+        match self {
+            Header::Version(_) => ":version",
+            Header::StreamId(_) => ":stream-id",
+            Header::MessageType(_) => ":message-type",
+            Header::MessageFlags(_) => ":message-flags",
+            Header::ContentType(_) => ":content-type",
+            Header::Operation(_) => "operation",
+            Header::ServiceModelType(_) => "service-model-type",
+            Header::OperationId(_) => ":operation-id",
+        }
+    }
+
+    /// Encode a single header to a byte buffer
+    fn encode(&self) -> Result<Bytes> {
+        let mut buffer = BytesMut::new();
+
+        // Write header name length (1 byte)
+        let name_bytes = self.name().as_bytes();
+        if name_bytes.len() > 255 {
+            return Err(Error::InvalidInput("Header name too long".to_string()));
+        }
+        buffer.put_u8(name_bytes.len() as u8);
+
+        // Write header name
+        buffer.extend_from_slice(name_bytes);
+
+        match self {
+            // String types
+            Header::ContentType(val)
+            | Header::Version(val)
+            | Header::Operation(val)
+            | Header::ServiceModelType(val)
+            | Header::OperationId(val) => {
+                buffer.put_u8(Self::STRING_TYPE);
+                let bytes = val.as_bytes();
+                if bytes.len() > u16::MAX as usize {
+                    return Err(Error::InvalidInput("String value too long".to_string()));
+                }
+                buffer.put_u16(bytes.len() as u16);
+                buffer.extend_from_slice(bytes);
+            }
+            // I32 types
+            Header::StreamId(val) | Header::MessageType(val) | Header::MessageFlags(val) => {
+                buffer.put_u8(4); // type code for integer
+                buffer.put_i32(*val);
+            }
+        }
+
+        Ok(buffer.freeze())
+    }
+
+    /// Decode a single header from a byte buffer
+    fn decode(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+        // Read header name
+        let name_len = cursor.get_u8() as usize;
+        let mut name_bytes = vec![0; name_len];
+        cursor.read_exact(&mut name_bytes).map_err(Error::from)?;
+        let name = String::from_utf8(name_bytes)
+            .map_err(|e| Error::InvalidInput(format!("Invalid header name: {}", e)))?;
+
+        // Read header type
+        let header_type = cursor.get_u8();
+
+        // First decode the value based on wire format type
+        let value = match header_type {
+            0 => HeaderValue::Bool(true),          // boolean_true - no value bytes
+            1 => HeaderValue::Bool(false),         // boolean_false - no value bytes
+            2 => HeaderValue::I8(cursor.get_i8()), // byte
+            3 => HeaderValue::I16(cursor.get_i16()), // short
+            4 => HeaderValue::I32(cursor.get_i32()), // integer
+            5 => HeaderValue::I64(cursor.get_i64()), // long
+            6 => {
+                // byte_array
+                let len = cursor.get_u16() as usize;
+                let mut bytes = vec![0; len];
+                cursor.read_exact(&mut bytes).map_err(Error::from)?;
+                HeaderValue::Bytes(bytes)
+            }
+            7 => {
+                // string
+                let len = cursor.get_u16() as usize;
+                let mut bytes = vec![0; len];
+                cursor.read_exact(&mut bytes).map_err(Error::from)?;
+                let string = String::from_utf8(bytes)
+                    .map_err(|e| Error::InvalidInput(format!("Invalid string: {}", e)))?;
+                HeaderValue::String(string)
+            }
+            8 => HeaderValue::Timestamp(cursor.get_u64()), // timestamp
+            9 => {
+                // uuid
+                let mut uuid = [0; 16];
+                cursor.read_exact(&mut uuid).map_err(Error::from)?;
+                HeaderValue::Uuid(uuid)
+            }
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "Unknown header type: {}",
+                    header_type
+                )))
+            }
+        };
+
+        // Then convert to the appropriate Header variant based on name and value
+        let header = match (name.as_str(), value) {
+            (":version", HeaderValue::String(s)) => Header::Version(s),
+            (":stream-id", HeaderValue::I32(i)) => Header::StreamId(i),
+            (":message-type", HeaderValue::I32(i)) => Header::MessageType(i),
+            (":message-flags", HeaderValue::I32(i)) => Header::MessageFlags(i),
+            (":content-type", HeaderValue::String(s)) => Header::ContentType(s),
+            ("operation", HeaderValue::String(s)) => Header::Operation(s),
+            ("service-model-type", HeaderValue::String(s)) => Header::ServiceModelType(s),
+            (":operation-id", HeaderValue::String(s)) => Header::OperationId(s),
+            (name, value) => {
+                return Err(Error::InvalidInput(format!(
+                    "Unknown header: {} with value {:?}",
+                    name, value
+                )))
+            }
+        };
+
+        Ok(header)
+    }
+}
+
 /// A message in the Event Stream protocol
 #[derive(Debug, Clone)]
 pub struct EventStreamMessage {
     /// Headers for the message
-    pub headers: HashMap<String, HeaderValue>,
+    pub headers: Vec<Header>,
     /// Payload for the message
     pub payload: Bytes,
 }
 
 impl EventStreamMessage {
     /// Create a new Event Stream message
+    /// Create a new empty message
     pub fn new() -> Self {
         Self {
-            headers: HashMap::new(),
+            headers: Vec::new(),
             payload: Bytes::new(),
         }
     }
 
     /// Add a header to the message
-    pub fn with_header<S: Into<String>>(mut self, name: S, value: HeaderValue) -> Self {
-        self.headers.insert(name.into(), value);
+    pub fn with_header(mut self, header: Header) -> Self {
+        self.headers.push(header);
         self
     }
 
     /// Add multiple headers to the message
-    pub fn with_headers<S: Into<String>, I: IntoIterator<Item = (S, HeaderValue)>>(
-        mut self,
-        headers: I,
-    ) -> Self {
-        for (name, value) in headers {
-            self.headers.insert(name.into(), value);
-        }
+    pub fn with_headers<I: IntoIterator<Item = Header>>(mut self, headers: I) -> Self {
+        self.headers.extend(headers);
         self
     }
 
@@ -101,21 +236,44 @@ impl EventStreamMessage {
     }
 
     /// Get a header by name
-    pub fn get_header(&self, name: &str) -> Option<&HeaderValue> {
-        self.headers.get(name)
+    pub fn get_header(&self, name: &str) -> Option<&Header> {
+        self.headers.iter().find(|h| h.name() == name)
     }
 
     /// Get a string header value
     pub fn get_string_header(&self, name: &str) -> Option<&str> {
         match self.get_header(name) {
-            Some(HeaderValue::String(s)) => Some(s),
+            Some(Header::Version(s)) => Some(s),
+            Some(Header::ContentType(s)) => Some(s),
+            Some(Header::Operation(s)) => Some(s),
+            Some(Header::ServiceModelType(s)) => Some(s),
+            Some(Header::OperationId(s)) => Some(s),
             _ => None,
         }
     }
 
     /// Get the message type header
-    pub fn message_type(&self) -> Option<&str> {
-        self.get_string_header(":message-type")
+    pub fn message_type(&self) -> Option<i32> {
+        match self.get_header(":message-type") {
+            Some(Header::MessageType(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Get the stream ID header
+    pub fn stream_id(&self) -> Option<i32> {
+        match self.get_header(":stream-id") {
+            Some(Header::StreamId(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Get the message flags header
+    pub fn message_flags(&self) -> Option<i32> {
+        match self.get_header(":message-flags") {
+            Some(Header::MessageFlags(i)) => Some(*i),
+            _ => None,
+        }
     }
 
     /// Encode the message to a byte buffer
@@ -157,95 +315,8 @@ impl EventStreamMessage {
     fn encode_headers(&self) -> Result<Bytes> {
         let mut buffer = BytesMut::new();
 
-        for (name, value) in &self.headers {
-            buffer.extend_from_slice(self.encode_header(name, value)?.as_ref());
-        }
-
-        Ok(buffer.freeze())
-    }
-
-    /// Encode a single header to a byte buffer
-    fn encode_header(&self, name: &str, value: &HeaderValue) -> Result<Bytes> {
-        let mut buffer = BytesMut::new();
-
-        // Write header name length (1 byte)
-        let name_bytes = name.as_bytes();
-        if name_bytes.len() > 255 {
-            return Err(Error::InvalidInput("Header name too long".to_string()));
-        }
-        buffer.put_u8(name_bytes.len() as u8);
-
-        // Write header name
-        buffer.extend_from_slice(name_bytes);
-
-        // Write header type and value
-        match value {
-            HeaderValue::Bool(val) => {
-                if *val {
-                    buffer.put_u8(0); // type code for boolean_true
-                    // No value bytes follow for boolean true
-                } else {
-                    buffer.put_u8(1); // type code for boolean_false
-                    // No value bytes follow for boolean false
-                }
-            }
-            HeaderValue::I8(val) => {
-                buffer.put_u8(2); // type code for byte
-                buffer.put_i8(*val);
-            }
-            HeaderValue::U8(val) => {
-                buffer.put_u8(2); // type code for byte (treating as i8)
-                buffer.put_i8(*val as i8);
-            }
-            HeaderValue::I16(val) => {
-                buffer.put_u8(3); // type code for short
-                buffer.put_i16(*val);
-            }
-            HeaderValue::U16(val) => {
-                buffer.put_u8(3); // type code for short (treating as i16)
-                buffer.put_i16(*val as i16);
-            }
-            HeaderValue::I32(val) => {
-                buffer.put_u8(4); // type code for integer
-                buffer.put_i32(*val);
-            }
-            HeaderValue::U32(val) => {
-                buffer.put_u8(4); // type code for integer (treating as i32)
-                buffer.put_i32(*val as i32);
-            }
-            HeaderValue::I64(val) => {
-                buffer.put_u8(5); // type code for long
-                buffer.put_i64(*val);
-            }
-            HeaderValue::U64(val) => {
-                buffer.put_u8(5); // type code for long (treating as i64)
-                buffer.put_i64(*val as i64);
-            }
-            HeaderValue::String(val) => {
-                buffer.put_u8(7); // type code for string
-                let bytes = val.as_bytes();
-                if bytes.len() > u16::MAX as usize {
-                    return Err(Error::InvalidInput("String value too long".to_string()));
-                }
-                buffer.put_u16(bytes.len() as u16);
-                buffer.extend_from_slice(bytes);
-            }
-            HeaderValue::Bytes(val) => {
-                buffer.put_u8(6); // type code for byte_array
-                if val.len() > u16::MAX as usize {
-                    return Err(Error::InvalidInput("Bytes value too long".to_string()));
-                }
-                buffer.put_u16(val.len() as u16);
-                buffer.extend_from_slice(val);
-            }
-            HeaderValue::Timestamp(val) => {
-                buffer.put_u8(8); // type code for timestamp
-                buffer.put_u64(*val);
-            }
-            HeaderValue::Uuid(val) => {
-                buffer.put_u8(9); // type code for uuid
-                buffer.extend_from_slice(val);
-            }
+        for header in &self.headers {
+            buffer.extend_from_slice(header.encode()?.as_ref());
         }
 
         Ok(buffer.freeze())
@@ -316,70 +387,16 @@ impl EventStreamMessage {
     }
 
     /// Decode headers from a byte buffer
-    fn decode_headers(bytes: &[u8]) -> Result<HashMap<String, HeaderValue>> {
-        let mut headers = HashMap::new();
+    fn decode_headers(bytes: &[u8]) -> Result<Vec<Header>> {
+        let mut headers = Vec::new();
         let mut cursor = Cursor::new(bytes);
 
         while cursor.position() < bytes.len() as u64 {
-            let (name, value) = Self::decode_header(&mut cursor)?;
-            headers.insert(name, value);
+            let header = Header::decode(&mut cursor)?;
+            headers.push(header);
         }
 
         Ok(headers)
-    }
-
-    /// Decode a single header from a byte buffer
-    fn decode_header(cursor: &mut Cursor<&[u8]>) -> Result<(String, HeaderValue)> {
-        // Read header name
-        let name_len = cursor.get_u8() as usize;
-        let mut name_bytes = vec![0; name_len];
-        cursor.read_exact(&mut name_bytes).map_err(Error::from)?;
-        let name = String::from_utf8(name_bytes)
-            .map_err(|e| Error::InvalidInput(format!("Invalid header name: {}", e)))?;
-
-        // Read header type
-        let header_type = cursor.get_u8();
-
-        // Read header value
-        let value = match header_type {
-            0 => HeaderValue::Bool(true), // boolean_true - no value bytes
-            1 => HeaderValue::Bool(false), // boolean_false - no value bytes
-            2 => HeaderValue::I8(cursor.get_i8()), // byte
-            3 => HeaderValue::I16(cursor.get_i16()), // short
-            4 => HeaderValue::I32(cursor.get_i32()), // integer
-            5 => HeaderValue::I64(cursor.get_i64()), // long
-            6 => {
-                // byte_array
-                let len = cursor.get_u16() as usize;
-                let mut bytes = vec![0; len];
-                cursor.read_exact(&mut bytes).map_err(Error::from)?;
-                HeaderValue::Bytes(bytes)
-            }
-            7 => {
-                // string
-                let len = cursor.get_u16() as usize;
-                let mut bytes = vec![0; len];
-                cursor.read_exact(&mut bytes).map_err(Error::from)?;
-                let string = String::from_utf8(bytes)
-                    .map_err(|e| Error::InvalidInput(format!("Invalid string: {}", e)))?;
-                HeaderValue::String(string)
-            }
-            8 => HeaderValue::Timestamp(cursor.get_u64()), // timestamp
-            9 => {
-                // uuid
-                let mut uuid = [0; 16];
-                cursor.read_exact(&mut uuid).map_err(Error::from)?;
-                HeaderValue::Uuid(uuid)
-            }
-            _ => {
-                return Err(Error::InvalidInput(format!(
-                    "Unknown header type: {}",
-                    header_type
-                )))
-            }
-        };
-
-        Ok((name, value))
     }
 }
 
