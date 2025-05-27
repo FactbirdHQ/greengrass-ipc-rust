@@ -16,7 +16,8 @@ use crate::error::{Error, Result};
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
     BinaryMessage, Message, PublishToTopicRequest, PublishToTopicResponse, SubscribeToTopicRequest,
-    SubscribeToTopicResponse, SubscriptionResponseMessage,
+    SubscribeToTopicResponse, SubscriptionResponseMessage, PublishToIoTCoreRequest, 
+    PublishToIoTCoreResponse, SubscribeToIoTCoreRequest,
 };
 
 /// Default timeout for operations in seconds
@@ -393,6 +394,294 @@ impl GreengrassCoreIPCClient {
             operation_id,
             message_receiver,
         ))
+    }
+
+    /// Publish an MQTT message to AWS IoT message broker
+    pub async fn publish_to_iot_core(
+        &self,
+        request: PublishToIoTCoreRequest,
+    ) -> Result<PublishToIoTCoreResponse> {
+        todo!("Implement publish_to_iot_core using existing PublishToIoTCoreRequest")
+    }
+
+    // =============================================
+    // Authorization and Client Device Operations
+    // =============================================
+
+    /// Authorize action on some resource
+    pub async fn authorize_client_device_action(
+        &self,
+        _request: (), // TODO: Replace with AuthorizeClientDeviceActionRequest
+    ) -> Result<()> { // TODO: Replace with AuthorizeClientDeviceActionResponse
+        todo!("Implement authorize_client_device_action")
+    }
+
+    /// Get session token for a client device
+    pub async fn get_client_device_auth_token(
+        &self,
+        _request: (), // TODO: Replace with GetClientDeviceAuthTokenRequest
+    ) -> Result<()> { // TODO: Replace with GetClientDeviceAuthTokenResponse
+        todo!("Implement get_client_device_auth_token")
+    }
+
+    /// Verify client device credentials
+    pub async fn verify_client_device_identity(
+        &self,
+        _request: (), // TODO: Replace with VerifyClientDeviceIdentityRequest
+    ) -> Result<()> { // TODO: Replace with VerifyClientDeviceIdentityResponse
+        todo!("Implement verify_client_device_identity")
+    }
+
+    /// Validate authorization token (NOTE: Only usable by stream manager)
+    pub async fn validate_authorization_token(
+        &self,
+        _request: (), // TODO: Replace with ValidateAuthorizationTokenRequest
+    ) -> Result<()> { // TODO: Replace with ValidateAuthorizationTokenResponse
+        todo!("Implement validate_authorization_token")
+    }
+
+    // =============================================
+    // Local Deployment Operations
+    // =============================================
+
+    /// Create a local deployment on the device
+    pub async fn create_local_deployment(
+        &self,
+        _request: (), // TODO: Replace with CreateLocalDeploymentRequest
+    ) -> Result<()> { // TODO: Replace with CreateLocalDeploymentResponse
+        todo!("Implement create_local_deployment")
+    }
+
+    /// Cancel a local deployment on the device
+    pub async fn cancel_local_deployment(
+        &self,
+        _request: (), // TODO: Replace with CancelLocalDeploymentRequest
+    ) -> Result<()> { // TODO: Replace with CancelLocalDeploymentResponse
+        todo!("Implement cancel_local_deployment")
+    }
+
+    /// Get status of a local deployment with the given deployment ID
+    pub async fn get_local_deployment_status(
+        &self,
+        _request: (), // TODO: Replace with GetLocalDeploymentStatusRequest
+    ) -> Result<()> { // TODO: Replace with GetLocalDeploymentStatusResponse
+        todo!("Implement get_local_deployment_status")
+    }
+
+    /// List the last 5 local deployments along with their statuses
+    pub async fn list_local_deployments(
+        &self,
+        _request: (), // TODO: Replace with ListLocalDeploymentsRequest
+    ) -> Result<()> { // TODO: Replace with ListLocalDeploymentsResponse
+        todo!("Implement list_local_deployments")
+    }
+
+    // =============================================
+    // Component Management Operations
+    // =============================================
+
+    /// Get the status and version of the component with the given component name
+    pub async fn get_component_details(
+        &self,
+        _request: (), // TODO: Replace with GetComponentDetailsRequest
+    ) -> Result<()> { // TODO: Replace with GetComponentDetailsResponse
+        todo!("Implement get_component_details")
+    }
+
+    /// Request for a list of components
+    pub async fn list_components(
+        &self,
+        _request: (), // TODO: Replace with ListComponentsRequest
+    ) -> Result<()> { // TODO: Replace with ListComponentsResponse
+        todo!("Implement list_components")
+    }
+
+    /// Restart a component with the given name
+    pub async fn restart_component(
+        &self,
+        _request: (), // TODO: Replace with RestartComponentRequest
+    ) -> Result<()> { // TODO: Replace with RestartComponentResponse
+        todo!("Implement restart_component")
+    }
+
+    /// Stop a component with the given name
+    pub async fn stop_component(
+        &self,
+        _request: (), // TODO: Replace with StopComponentRequest
+    ) -> Result<()> { // TODO: Replace with StopComponentResponse
+        todo!("Implement stop_component")
+    }
+
+    /// Pause a running component
+    pub async fn pause_component(
+        &self,
+        _request: (), // TODO: Replace with PauseComponentRequest
+    ) -> Result<()> { // TODO: Replace with PauseComponentResponse
+        todo!("Implement pause_component")
+    }
+
+    /// Resume a paused component
+    pub async fn resume_component(
+        &self,
+        _request: (), // TODO: Replace with ResumeComponentRequest
+    ) -> Result<()> { // TODO: Replace with ResumeComponentResponse
+        todo!("Implement resume_component")
+    }
+
+    /// Defer the update of components by a given amount of time
+    pub async fn defer_component_update(
+        &self,
+        _request: (), // TODO: Replace with DeferComponentUpdateRequest
+    ) -> Result<()> { // TODO: Replace with DeferComponentUpdateResponse
+        todo!("Implement defer_component_update")
+    }
+
+    /// Send component metrics (NOTE: Only usable by AWS components)
+    pub async fn put_component_metric(
+        &self,
+        _request: (), // TODO: Replace with PutComponentMetricRequest
+    ) -> Result<()> { // TODO: Replace with PutComponentMetricResponse
+        todo!("Implement put_component_metric")
+    }
+
+    // =============================================
+    // Configuration Operations
+    // =============================================
+
+    /// Get value of a given key from the configuration
+    pub async fn get_configuration(
+        &self,
+        _request: (), // TODO: Replace with GetConfigurationRequest
+    ) -> Result<()> { // TODO: Replace with GetConfigurationResponse
+        todo!("Implement get_configuration")
+    }
+
+    /// Update this component's configuration by replacing the value of given keyName
+    pub async fn update_configuration(
+        &self,
+        _request: (), // TODO: Replace with UpdateConfigurationRequest
+    ) -> Result<()> { // TODO: Replace with UpdateConfigurationResponse
+        todo!("Implement update_configuration")
+    }
+
+    /// Send configuration validity report
+    pub async fn send_configuration_validity_report(
+        &self,
+        _request: (), // TODO: Replace with SendConfigurationValidityReportRequest
+    ) -> Result<()> { // TODO: Replace with SendConfigurationValidityReportResponse
+        todo!("Implement send_configuration_validity_report")
+    }
+
+    // =============================================
+    // State and Shadow Operations
+    // =============================================
+
+    /// Update status of this component
+    pub async fn update_state(
+        &self,
+        _request: (), // TODO: Replace with UpdateStateRequest
+    ) -> Result<()> { // TODO: Replace with UpdateStateResponse
+        todo!("Implement update_state")
+    }
+
+    /// Retrieve a device shadow document stored by the local shadow service
+    pub async fn get_thing_shadow(
+        &self,
+        _request: (), // TODO: Replace with GetThingShadowRequest
+    ) -> Result<()> { // TODO: Replace with GetThingShadowResponse
+        todo!("Implement get_thing_shadow")
+    }
+
+    /// Update a device shadow document stored in the local shadow service
+    pub async fn update_thing_shadow(
+        &self,
+        _request: (), // TODO: Replace with UpdateThingShadowRequest
+    ) -> Result<()> { // TODO: Replace with UpdateThingShadowResponse
+        todo!("Implement update_thing_shadow")
+    }
+
+    /// Delete a device shadow document stored in the local shadow service
+    pub async fn delete_thing_shadow(
+        &self,
+        _request: (), // TODO: Replace with DeleteThingShadowRequest
+    ) -> Result<()> { // TODO: Replace with DeleteThingShadowResponse
+        todo!("Implement delete_thing_shadow")
+    }
+
+    /// List the named shadows for the specified thing
+    pub async fn list_named_shadows_for_thing(
+        &self,
+        _request: (), // TODO: Replace with ListNamedShadowsForThingRequest
+    ) -> Result<()> { // TODO: Replace with ListNamedShadowsForThingResponse
+        todo!("Implement list_named_shadows_for_thing")
+    }
+
+    // =============================================
+    // Secret Management Operations
+    // =============================================
+
+    /// Retrieve a secret stored in AWS Secrets Manager
+    pub async fn get_secret_value(
+        &self,
+        _request: (), // TODO: Replace with GetSecretValueRequest
+    ) -> Result<()> { // TODO: Replace with GetSecretValueResponse
+        todo!("Implement get_secret_value")
+    }
+
+    // =============================================
+    // Debug Operations
+    // =============================================
+
+    /// Generate a password for the LocalDebugConsole component
+    pub async fn create_debug_password(
+        &self,
+        _request: (), // TODO: Replace with CreateDebugPasswordRequest
+    ) -> Result<()> { // TODO: Replace with CreateDebugPasswordResponse
+        todo!("Implement create_debug_password")
+    }
+
+    // =============================================
+    // Streaming Subscription Operations
+    // =============================================
+
+    /// Subscribe to receive notification if GGC is about to update any components
+    pub async fn subscribe_to_component_updates(
+        &self,
+        _request: (), // TODO: Replace with SubscribeToComponentUpdatesRequest
+    ) -> Result<()> { // TODO: Return appropriate streaming type like Subscription
+        todo!("Implement subscribe_to_component_updates")
+    }
+
+    /// Subscribe to be notified when GGC updates the configuration
+    pub async fn subscribe_to_configuration_update(
+        &self,
+        _request: (), // TODO: Replace with SubscribeToConfigurationUpdateRequest
+    ) -> Result<()> { // TODO: Return appropriate streaming type like Subscription
+        todo!("Implement subscribe_to_configuration_update")
+    }
+
+    /// Subscribe to be notified when GGC is about to update configuration for this component
+    pub async fn subscribe_to_validate_configuration_updates(
+        &self,
+        _request: (), // TODO: Replace with SubscribeToValidateConfigurationUpdatesRequest
+    ) -> Result<()> { // TODO: Return appropriate streaming type like Subscription
+        todo!("Implement subscribe_to_validate_configuration_updates")
+    }
+
+    /// Create a subscription for new certificates
+    pub async fn subscribe_to_certificate_updates(
+        &self,
+        _request: (), // TODO: Replace with SubscribeToCertificateUpdatesRequest
+    ) -> Result<()> { // TODO: Return appropriate streaming type like Subscription
+        todo!("Implement subscribe_to_certificate_updates")
+    }
+
+    /// Subscribe to a topic in AWS IoT message broker (already implemented as subscribe_to_iot_core)
+    pub async fn subscribe_to_iot_core(
+        &self,
+        request: SubscribeToIoTCoreRequest,
+    ) -> Result<()> { // TODO: Return appropriate streaming type like Subscription and implement
+        todo!("Implement subscribe_to_iot_core using existing SubscribeToIoTCoreRequest")
     }
 }
 

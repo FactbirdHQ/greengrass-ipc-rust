@@ -71,6 +71,39 @@ pub enum Message {
     Binary(BinaryMessage),
 }
 
+impl Message {
+    /// Create a new JSON message
+    pub fn json(message: serde_json::Value) -> Self {
+        Message::Json(JsonMessage {
+            message,
+            context: None,
+        })
+    }
+
+    /// Create a new binary message
+    pub fn binary(message: Bytes) -> Self {
+        Message::Binary(BinaryMessage {
+            message,
+            context: None,
+        })
+    }
+
+    /// Set the topic context for this message
+    pub fn with_topic<S: Into<String>>(mut self, topic: S) -> Self {
+        let topic_str = topic.into();
+        let context = Some(MessageContext {
+            topic: Some(topic_str),
+        });
+
+        match &mut self {
+            Message::Json(msg) => msg.context = context,
+            Message::Binary(msg) => msg.context = context,
+        }
+
+        self
+    }
+}
+
 /// A response from a subscription operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionResponseMessage {
@@ -261,39 +294,6 @@ pub struct UserProperty {
 
     /// The property value
     pub value: String,
-}
-
-impl Message {
-    /// Create a new JSON message
-    pub fn json(message: serde_json::Value) -> Self {
-        Message::Json(JsonMessage {
-            message,
-            context: None,
-        })
-    }
-
-    /// Create a new binary message
-    pub fn binary(message: Bytes) -> Self {
-        Message::Binary(BinaryMessage {
-            message,
-            context: None,
-        })
-    }
-
-    /// Set the topic context for this message
-    pub fn with_topic<S: Into<String>>(mut self, topic: S) -> Self {
-        let topic_str = topic.into();
-        let context = Some(MessageContext {
-            topic: Some(topic_str),
-        });
-
-        match &mut self {
-            Message::Json(msg) => msg.context = context,
-            Message::Binary(msg) => msg.context = context,
-        }
-
-        self
-    }
 }
 
 #[cfg(test)]
