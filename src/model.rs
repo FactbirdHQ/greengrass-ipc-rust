@@ -177,7 +177,7 @@ pub struct PublishToIoTCoreRequest {
     pub qos: QoS,
 
     /// The payload to publish
-    #[serde_as(as = "BytesAsVec")]
+    #[serde_as(as = "Base64")]
     pub payload: Bytes,
 
     /// The user properties to include in the publish
@@ -269,15 +269,37 @@ pub struct MqttMessage {
 }
 
 /// MQTT QoS level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum QoS {
     /// QoS 0 - At most once delivery
-    #[serde(rename = "AT_MOST_ONCE")]
     AtMostOnce = 0,
 
     /// QoS 1 - At least once delivery
-    #[serde(rename = "AT_LEAST_ONCE")]
     AtLeastOnce = 1,
+}
+
+impl Serialize for QoS {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for QoS {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u8::deserialize(deserializer)?;
+        match value {
+            0 => Ok(QoS::AtMostOnce),
+            1 => Ok(QoS::AtLeastOnce),
+            _ => Err(serde::de::Error::custom(format!("Invalid QoS value: {}", value))),
+        }
+    }
 }
 
 impl Default for QoS {

@@ -401,7 +401,124 @@ impl GreengrassCoreIPCClient {
         &self,
         request: PublishToIoTCoreRequest,
     ) -> Result<PublishToIoTCoreResponse> {
-        todo!("Implement publish_to_iot_core using existing PublishToIoTCoreRequest")
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message following AWS Event Stream RPC protocol
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(
+                ":message-type".to_string(),
+                crate::event_stream::HeaderValue::I32(0), // APPLICATION_MESSAGE = 0
+            )
+            .with_header(
+                ":stream-id".to_string(),
+                crate::event_stream::HeaderValue::I32(stream_id),
+            )
+            .with_header(
+                ":message-flags".to_string(),
+                crate::event_stream::HeaderValue::I32(0), // No flags
+            )
+            .with_header(
+                ":content-type".to_string(),
+                crate::event_stream::HeaderValue::String("application/json".to_string()),
+            )
+            .with_header(
+                "operation".to_string(),
+                crate::event_stream::HeaderValue::String(
+                    "aws.greengrass#PublishToIoTCore".to_string(),
+                ),
+            )
+            .with_header(
+                "service-model-type".to_string(),
+                crate::event_stream::HeaderValue::String(
+                    "aws.greengrass#PublishToIoTCoreRequest".to_string(),
+                ),
+            )
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!("Sending PublishToIoTCore operation on stream {}", stream_id);
+        log::trace!("Message headers: {:?}", event_message.headers);
+        log::trace!(
+            "Message payload: {}",
+            String::from_utf8_lossy(&event_message.payload)
+        );
+
+        match self.connection.send_message(&event_message).await {
+            Ok(()) => log::debug!("PublishToIoTCore message sent successfully"),
+            Err(e) => {
+                log::error!("Failed to send PublishToIoTCore message: {}", e);
+                return Err(e);
+            }
+        }
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("PublishToIoTCore failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: PublishToIoTCoreResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!(
+                    "Failed to deserialize PublishToIoTCore response: {}",
+                    e
+                ))
+            })?;
+
+        log::info!("Successfully published to IoT Core topic: {}", request.topic_name);
+        Ok(response)
     }
 
     // =============================================
