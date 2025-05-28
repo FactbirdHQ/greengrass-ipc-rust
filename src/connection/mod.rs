@@ -6,17 +6,18 @@
 use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixStream, unix::{OwnedReadHalf, OwnedWriteHalf}};
-use tokio::sync::{mpsc, oneshot, RwLock, Mutex};
-use std::sync::atomic::{AtomicI32, Ordering};
+use tokio::net::{
+    unix::{OwnedReadHalf, OwnedWriteHalf},
+    UnixStream,
+};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
 use crate::error::{Error, Result};
-use crate::event_stream::{
-    EventStreamMessage,
-};
+use crate::event_stream::{EventStreamMessage, Header};
 use crate::lifecycle::{ConnectionError, LifecycleHandler};
 
 /// The environment variable containing the path to the Greengrass IPC socket
@@ -220,7 +221,7 @@ impl Connection {
                 ));
             }
             *state_guard = ConnectionState::WaitingForConnectAck;
-            
+
             // Split the stream into read and write halves
             stream.into_split()
         };
@@ -244,7 +245,6 @@ impl Connection {
                 .await;
         });
 
-
         // Send the CONNECT message with auth token
         debug!("Socket connection established, sending CONNECT message");
 
@@ -253,7 +253,9 @@ impl Connection {
 
         let mut connect_message = EventStreamMessage::new();
         connect_message = connect_message
-            .with_header(crate::event_stream::Header::Version(VERSION_STRING.to_string()))
+            .with_header(crate::event_stream::Header::Version(
+                VERSION_STRING.to_string(),
+            ))
             .with_header(crate::event_stream::Header::MessageType(4)) // CONNECT = 4
             .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
             .with_header(crate::event_stream::Header::StreamId(0)) // Protocol messages use stream-id 0
@@ -354,7 +356,10 @@ impl Connection {
         debug!("Sending message in state: {:?}", state);
 
         if state != ConnectionState::Connected && state != ConnectionState::WaitingForConnectAck {
-            error!("Cannot send message - connection not established, state: {:?}", state);
+            error!(
+                "Cannot send message - connection not established, state: {:?}",
+                state
+            );
             return Err(Error::ConnectionClosed(
                 "Connection is not established".to_string(),
             ));
@@ -365,21 +370,15 @@ impl Connection {
             let encoded = message.encode()?;
             debug!("Encoded message size: {} bytes", encoded.len());
 
-            write_stream
-                .write_all(&encoded)
-                .await
-                .map_err(|e| {
-                    error!("Failed to write message: {}", e);
-                    Error::SendFailed(e.to_string())
-                })?;
+            write_stream.write_all(&encoded).await.map_err(|e| {
+                error!("Failed to write message: {}", e);
+                Error::SendFailed(e.to_string())
+            })?;
 
-            write_stream
-                .flush()
-                .await
-                .map_err(|e| {
-                    error!("Failed to flush stream: {}", e);
-                    Error::SendFailed(e.to_string())
-                })?;
+            write_stream.flush().await.map_err(|e| {
+                error!("Failed to flush stream: {}", e);
+                Error::SendFailed(e.to_string())
+            })?;
 
             debug!("Message sent successfully");
             Ok(())
@@ -404,11 +403,11 @@ impl Connection {
     pub async fn unregister_stream_handler(&self, operation_id: &str) -> Result<()> {
         let mut handlers = self.response_handlers.write().await;
         handlers.remove(operation_id);
-        
+
         // Also remove from stream mapping
         let mut mapping = self.stream_to_operation_map.write().await;
         mapping.retain(|_, op_id| op_id != operation_id);
-        
+
         Ok(())
     }
 
@@ -542,7 +541,7 @@ impl Connection {
     /// Handle a non-connection message
     async fn handle_non_connect_message(&self, message: EventStreamMessage) -> Result<()> {
         trace!("Received message with {} headers", message.headers.len());
-        
+
         // Debug: print all headers
         for header in &message.headers {
             trace!("Header: {} = {:?}", header.name(), header);
@@ -580,20 +579,30 @@ impl Connection {
                     6 => {
                         // PROTOCOL_ERROR
                         error!("Received PROTOCOL_ERROR from server");
-                        if let Some(error_code) = message.get_string_header(":error-code") {
+                        if let Some(error_code) = message
+                            .get_header(":error-code")
+                            .and_then(Header::string_value)
+                        {
                             error!("Protocol error code: {}", error_code);
                         }
-                        if let Some(error_message) = message.get_string_header(":error-message") {
+                        if let Some(error_message) = message
+                            .get_header(":error-message")
+                            .and_then(Header::string_value)
+                        {
                             error!("Protocol error message: {}", error_message);
                         }
-                        
+
                         // Log the payload if present
                         if !message.payload.is_empty() {
-                            error!("Protocol error payload: {}", String::from_utf8_lossy(&message.payload));
+                            error!(
+                                "Protocol error payload: {}",
+                                String::from_utf8_lossy(&message.payload)
+                            );
                         }
-                        
+
                         return Err(Error::ProtocolError(format!(
-                            "Server sent protocol error: {:?}", message.headers
+                            "Server sent protocol error: {:?}",
+                            message.headers
                         )));
                     }
                     7 => {
@@ -608,7 +617,10 @@ impl Connection {
             }
             _ => {
                 warn!("Received message with no or invalid message-type header");
-                warn!("Available headers: {:?}", message.headers.iter().map(|h| h.name()).collect::<Vec<_>>());
+                warn!(
+                    "Available headers: {:?}",
+                    message.headers.iter().map(|h| h.name()).collect::<Vec<_>>()
+                );
             }
         }
 
@@ -621,14 +633,22 @@ impl Connection {
     }
 
     /// Register a response handler for an operation
-    pub async fn register_response_handler(&self, stream_id: i32, sender: oneshot::Sender<Result<String>>) -> Result<()> {
+    pub async fn register_response_handler(
+        &self,
+        stream_id: i32,
+        sender: oneshot::Sender<Result<String>>,
+    ) -> Result<()> {
         let mut handlers = self.operation_response_handlers.write().await;
         handlers.insert(stream_id, sender);
         Ok(())
     }
 
     /// Register a mapping from stream ID to operation ID for subscription handling
-    pub async fn register_stream_operation_mapping(&self, stream_id: i32, operation_id: String) -> Result<()> {
+    pub async fn register_stream_operation_mapping(
+        &self,
+        stream_id: i32,
+        operation_id: String,
+    ) -> Result<()> {
         let mut mapping = self.stream_to_operation_map.write().await;
         mapping.insert(stream_id, operation_id);
         Ok(())
@@ -637,7 +657,9 @@ impl Connection {
     /// Handle an APPLICATION_MESSAGE (could be response to operation)
     async fn handle_application_message(&self, message: EventStreamMessage) -> Result<()> {
         // Get the stream ID from the message
-        if let Some(crate::event_stream::Header::StreamId(stream_id)) = message.get_header(":stream-id") {
+        if let Some(crate::event_stream::Header::StreamId(stream_id)) =
+            message.get_header(":stream-id")
+        {
             // Check if this is a response to one of our operations
             let mut handlers = self.operation_response_handlers.write().await;
             if let Some(sender) = handlers.remove(stream_id) {
@@ -672,11 +694,16 @@ impl Connection {
 
         // Debug log all headers and payload in CONNECT_ACK
         debug!("CONNECT_ACK message headers: {:?}", message.headers);
-        debug!("CONNECT_ACK message payload: {}", String::from_utf8_lossy(&message.payload));
+        debug!(
+            "CONNECT_ACK message payload: {}",
+            String::from_utf8_lossy(&message.payload)
+        );
 
         // Check if connection was accepted by looking at message flags
         // CONNECTION_ACCEPTED flag = 0x01
-        if let Some(crate::event_stream::Header::MessageFlags(flags)) = message.get_header(":message-flags") {
+        if let Some(crate::event_stream::Header::MessageFlags(flags)) =
+            message.get_header(":message-flags")
+        {
             debug!("CONNECT_ACK flags: 0x{:x}", flags);
             if (flags & 0x01) == 0 {
                 let err = Error::AuthenticationError("Connection access denied".to_string());
@@ -715,9 +742,14 @@ impl Connection {
     /// Handle a stream event message
     async fn handle_stream_event(&self, message: EventStreamMessage) -> Result<()> {
         // Try to extract operation ID directly first
-        let operation_id = if let Some(id) = message.get_string_header(":operation-id") {
+        let operation_id = if let Some(id) = message
+            .get_header(":operation-id")
+            .and_then(Header::string_value)
+        {
             id.to_string()
-        } else if let Some(crate::event_stream::Header::StreamId(stream_id)) = message.get_header(":stream-id") {
+        } else if let Some(crate::event_stream::Header::StreamId(stream_id)) =
+            message.get_header(":stream-id")
+        {
             // If no operation ID, try to map from stream ID (for subscriptions)
             let mapping = self.stream_to_operation_map.read().await;
             match mapping.get(stream_id) {
@@ -746,7 +778,10 @@ impl Connection {
     /// Handle a response message
     async fn handle_response(&self, message: EventStreamMessage) -> Result<()> {
         // Extract operation ID
-        let operation_id = match message.get_string_header(":operation-id") {
+        let operation_id = match message
+            .get_header(":operation-id")
+            .and_then(Header::string_value)
+        {
             Some(id) => id,
             None => {
                 warn!("Received response with no operation ID");
@@ -756,7 +791,7 @@ impl Connection {
 
         // Find the appropriate handler
         let handlers = self.response_handlers.read().await;
-        if let Some(handler) = handlers.get(operation_id) {
+        if let Some(handler) = handlers.get(&operation_id) {
             handler.handle_message(message)?;
         } else {
             warn!("No handler found for operation ID: {}", operation_id);
@@ -768,7 +803,10 @@ impl Connection {
     /// Handle an error message
     async fn handle_error(&self, message: EventStreamMessage) -> Result<()> {
         // Extract operation ID
-        let operation_id = match message.get_string_header(":operation-id") {
+        let operation_id = match message
+            .get_header(":operation-id")
+            .and_then(Header::string_value)
+        {
             Some(id) => id,
             None => {
                 warn!("Received error with no operation ID");
@@ -779,17 +817,19 @@ impl Connection {
         // Find the appropriate handler
         let error = Error::ServiceError(
             message
-                .get_string_header(":error-type")
-                .unwrap_or("Unknown")
+                .get_header(":error-type")
+                .and_then(Header::string_value)
+                .unwrap_or("Unknown".to_string())
                 .to_string(),
             message
-                .get_string_header(":error-message")
-                .unwrap_or("No error message")
+                .get_header(":error-message")
+                .and_then(Header::string_value)
+                .unwrap_or("No error message".to_string())
                 .to_string(),
         );
 
         let handlers = self.response_handlers.read().await;
-        if let Some(handler) = handlers.get(operation_id) {
+        if let Some(handler) = handlers.get(&operation_id) {
             // If handler returns true, it wants to close the operation
             match handler.handle_error(&error) {
                 Ok(should_close) => {

@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::connection::Connection;
 use crate::error::{Error, Result};
+use crate::event_stream::Header;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
     BinaryMessage, IoTCoreMessage, Message, PublishToIoTCoreRequest, PublishToIoTCoreResponse,
@@ -114,7 +115,9 @@ impl GreengrassCoreIPCClient {
             .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
             .with_header(crate::event_stream::Header::StreamId(stream_id))
             .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::ContentType(
+                "application/json".to_string(),
+            ))
             .with_header(crate::event_stream::Header::Operation(
                 "aws.greengrass#PublishToTopic".to_string(),
             ))
@@ -239,14 +242,18 @@ impl GreengrassCoreIPCClient {
             .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
             .with_header(crate::event_stream::Header::StreamId(stream_id))
             .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::ContentType(
+                "application/json".to_string(),
+            ))
             .with_header(crate::event_stream::Header::Operation(
                 "aws.greengrass#SubscribeToTopic".to_string(),
             ))
             .with_header(crate::event_stream::Header::ServiceModelType(
                 "aws.greengrass#SubscribeToTopicRequest".to_string(),
             ))
-            .with_header(crate::event_stream::Header::OperationId(operation_id.clone()))
+            .with_header(crate::event_stream::Header::OperationId(
+                operation_id.clone(),
+            ))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -385,7 +392,9 @@ impl GreengrassCoreIPCClient {
             .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
             .with_header(crate::event_stream::Header::StreamId(stream_id))
             .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::ContentType(
+                "application/json".to_string(),
+            ))
             .with_header(crate::event_stream::Header::Operation(
                 "aws.greengrass#PublishToIoTCore".to_string(),
             ))
@@ -816,14 +825,18 @@ impl GreengrassCoreIPCClient {
             .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
             .with_header(crate::event_stream::Header::StreamId(stream_id))
             .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType("application/json".to_string()))
+            .with_header(crate::event_stream::Header::ContentType(
+                "application/json".to_string(),
+            ))
             .with_header(crate::event_stream::Header::Operation(
                 "aws.greengrass#SubscribeToIoTCore".to_string(),
             ))
             .with_header(crate::event_stream::Header::ServiceModelType(
                 "aws.greengrass#SubscribeToIoTCoreRequest".to_string(),
             ))
-            .with_header(crate::event_stream::Header::OperationId(operation_id.clone()))
+            .with_header(crate::event_stream::Header::OperationId(
+                operation_id.clone(),
+            ))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -1059,7 +1072,10 @@ impl IoTCoreMessageHandler {
 impl crate::connection::StreamResponseHandler for SubscriptionMessageHandler {
     fn handle_message(&self, message: crate::event_stream::EventStreamMessage) -> Result<()> {
         // Check if this is a subscription response message by service model type
-        if let Some(service_model) = message.get_string_header("service-model-type") {
+        if let Some(service_model) = message
+            .get_header("service-model-type")
+            .and_then(Header::string_value)
+        {
             if service_model == "aws.greengrass#SubscriptionResponseMessage" {
                 // Deserialize the message payload to a SubscriptionResponseMessage
                 let payload_str = String::from_utf8_lossy(&message.payload);
@@ -1104,7 +1120,10 @@ impl crate::connection::StreamResponseHandler for SubscriptionMessageHandler {
 impl crate::connection::StreamResponseHandler for IoTCoreMessageHandler {
     fn handle_message(&self, message: crate::event_stream::EventStreamMessage) -> Result<()> {
         // Check if this is an IoT Core message by service model type
-        if let Some(service_model) = message.get_string_header("service-model-type") {
+        if let Some(service_model) = message
+            .get_header("service-model-type")
+            .and_then(Header::string_value)
+        {
             if service_model == "aws.greengrass#IoTCoreMessage" {
                 // Deserialize the message payload to an IoTCoreMessage
                 let payload_str = String::from_utf8_lossy(&message.payload);

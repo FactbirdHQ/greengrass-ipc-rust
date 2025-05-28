@@ -1,9 +1,9 @@
 //! Data models for Greengrass IPC
 //!
 //! This module defines the data models used for IPC communication with the Greengrass Core.
-
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use serde_with::{base64::Base64, serde_as, DeserializeAs, SerializeAs};
 
 /// Helper for serializing/deserializing Bytes as Vec<u8>
@@ -117,21 +117,16 @@ pub struct SubscriptionResponseMessage {
 }
 
 /// Behavior that specifies whether a component receives messages from itself
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiveMode {
     /// Receive all messages that match the topic, including from the subscriber
     #[serde(rename = "RECEIVE_ALL_MESSAGES")]
     ReceiveAllMessages,
 
     /// Receive all messages that match the topic, except from the subscriber
+    #[default]
     #[serde(rename = "RECEIVE_MESSAGES_FROM_OTHERS")]
     ReceiveMessagesFromOthers,
-}
-
-impl Default for ReceiveMode {
-    fn default() -> Self {
-        Self::ReceiveMessagesFromOthers
-    }
 }
 
 /// Request to publish to a topic
@@ -269,43 +264,15 @@ pub struct MqttMessage {
 }
 
 /// MQTT QoS level
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum QoS {
     /// QoS 0 - At most once delivery
+    #[default]
     AtMostOnce = 0,
 
     /// QoS 1 - At least once delivery
     AtLeastOnce = 1,
-}
-
-impl Serialize for QoS {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u8(*self as u8)
-    }
-}
-
-impl<'de> Deserialize<'de> for QoS {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u8::deserialize(deserializer)?;
-        match value {
-            0 => Ok(QoS::AtMostOnce),
-            1 => Ok(QoS::AtLeastOnce),
-            _ => Err(serde::de::Error::custom(format!("Invalid QoS value: {}", value))),
-        }
-    }
-}
-
-impl Default for QoS {
-    fn default() -> Self {
-        Self::AtMostOnce
-    }
 }
 
 /// An MQTT user property
