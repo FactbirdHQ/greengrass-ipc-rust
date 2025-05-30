@@ -1,16 +1,14 @@
-use greengrass_ipc_rust::{connect, Message, Result};
 use futures::StreamExt;
+use greengrass_ipc_rust::{GreengrassCoreIPCClient, Message, Result};
 use log::LevelFilter;
 
 /// A simple example demonstrating subscription to a Greengrass IPC topic
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::builder()
-        .filter_level(LevelFilter::Info)
-        .init();
+    env_logger::builder().filter_level(LevelFilter::Info).init();
 
     // Connect to the Greengrass Core IPC service
-    let client = match connect().await {
+    let client = match GreengrassCoreIPCClient::connect().await {
         Ok(client) => {
             println!("Successfully connected to Greengrass Core IPC service");
             client
@@ -50,6 +48,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }

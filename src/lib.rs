@@ -12,8 +12,6 @@ pub mod event_stream;
 mod lifecycle;
 pub mod model;
 
-use std::time::Duration;
-
 pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
@@ -34,45 +32,3 @@ pub use model::{
     SubscribeToValidateConfigurationUpdatesResponse, SubscriptionResponseMessage,
     UpdateConfigurationRequest, UpdateConfigurationResponse, ValidateConfigurationUpdateEvent,
 };
-
-/// Connect to the Greengrass Core IPC service with default parameters.
-///
-/// This will attempt to connect using the default Unix domain socket path and auth token,
-/// which are typically provided via environment variables by the Greengrass nucleus.
-///
-/// # Returns
-///
-/// A future that resolves to a `Result<GreengrassCoreIPCClient>`.
-pub async fn connect() -> Result<GreengrassCoreIPCClient> {
-    GreengrassCoreIPCClient::connect().await
-}
-
-/// Connect to the Greengrass Core IPC service with custom parameters.
-///
-/// # Arguments
-///
-/// * `ipc_socket` - Optional path to the Unix domain socket of the Greengrass nucleus.
-/// * `auth_token` - Optional authentication token.
-/// * `lifecycle_handler` - Optional handler for connection lifecycle events.
-/// * `timeout` - Optional timeout for the connection attempt in seconds.
-///
-/// # Returns
-///
-/// A future that resolves to a `Result<GreengrassCoreIPCClient>`.
-pub async fn connect_with_options(
-    ipc_socket: Option<std::path::PathBuf>,
-    auth_token: Option<String>,
-    lifecycle_handler: Option<Box<dyn LifecycleHandler>>,
-    timeout: Option<Duration>,
-) -> Result<GreengrassCoreIPCClient> {
-    GreengrassCoreIPCClient::connect_with_options(
-        ipc_socket,
-        auth_token,
-        lifecycle_handler,
-        timeout,
-    )
-    .await
-}
-
-/// Version of the Greengrass IPC library.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");

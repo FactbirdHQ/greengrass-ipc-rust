@@ -2,7 +2,6 @@
 //!
 //! This module provides the main client interface for the Greengrass Core IPC service.
 
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -25,9 +24,8 @@ use crate::model::{
     PublishToIoTCoreResponse, PublishToTopicRequest, PublishToTopicResponse,
     RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest,
     ResumeComponentResponse, StopComponentRequest, StopComponentResponse,
-    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, SubscribeToTopicRequest,
-    SubscribeToTopicResponse, SubscriptionResponseMessage, UpdateConfigurationRequest,
-    UpdateConfigurationResponse,
+    SubscribeToIoTCoreRequest, SubscribeToTopicRequest, SubscribeToTopicResponse,
+    SubscriptionResponseMessage, UpdateConfigurationRequest, UpdateConfigurationResponse,
 };
 
 /// Default timeout for operations in seconds
@@ -164,7 +162,7 @@ impl GreengrassCoreIPCClient {
     ) -> Result<StreamOperation<Resp>>
     where
         Req: serde::Serialize,
-        Resp: serde::de::DeserializeOwned,
+        Resp: serde::de::DeserializeOwned + Send + 'static,
     {
         // Create a unique stream ID for this operation
         let stream_id = self.connection.allocate_stream_id().await?;
@@ -707,7 +705,7 @@ impl GreengrassCoreIPCClient {
     pub async fn subscribe_to_iot_core(
         &self,
         request: SubscribeToIoTCoreRequest,
-    ) -> Result<StreamOperation<SubscriptionResponseMessage>> {
+    ) -> Result<StreamOperation<IoTCoreMessage>> {
         self.send_subscription_request(
             "SubscribeToIoTCore",
             "SubscribeToIoTCoreRequest",
@@ -737,6 +735,12 @@ impl<Resp> StreamOperation<Resp> {
             message_receiver,
         }
     }
+
+    pub async fn close(self) -> Result<()> {
+        self.connection
+            .unregister_stream_handler(&self.operation_id)
+            .await
+    }
 }
 
 impl<Resp> Stream for StreamOperation<Resp> {
@@ -761,6 +765,7 @@ impl<Resp> Drop for StreamOperation<Resp> {
         });
     }
 }
+
 /// A handler that forwards subscription messages to a channel
 struct StreamOperationHandler<Resp> {
     message_type_name: String,

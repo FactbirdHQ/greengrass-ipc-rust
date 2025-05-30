@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use futures::StreamExt;
 use greengrass_ipc_rust::{
-    connect, PublishToIoTCoreRequest, QoS, Result, SubscribeToIoTCoreRequest,
+    GreengrassCoreIPCClient, PublishToIoTCoreRequest, QoS, Result, SubscribeToIoTCoreRequest,
 };
 use log::LevelFilter;
 use std::time::Duration;
@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
         .init();
 
     // Connect to the Greengrass Core IPC service
-    let client = match connect().await {
+    let client = match GreengrassCoreIPCClient::connect().await {
         Ok(client) => {
             println!("Successfully connected to Greengrass Core IPC service");
             client
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
             println!("Received message on topic: {}", mqtt_msg.topic_name);
             let message_str = String::from_utf8_lossy(&mqtt_msg.payload);
             println!("Message content: {}", message_str);
-            
+
             // Print additional MQTT properties if available
             if let Some(user_props) = &mqtt_msg.user_properties {
                 println!("User properties: {:?}", user_props);
