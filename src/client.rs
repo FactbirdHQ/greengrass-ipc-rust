@@ -15,18 +15,7 @@ use crate::connection::Connection;
 use crate::error::{Error, Result};
 use crate::event_stream::Header;
 use crate::lifecycle::LifecycleHandler;
-use crate::model::{
-    BinaryMessage, GetComponentDetailsRequest, GetComponentDetailsResponse,
-    GetConfigurationRequest, GetConfigurationResponse, GetLocalDeploymentStatusRequest,
-    GetLocalDeploymentStatusResponse, IoTCoreMessage, ListComponentsRequest,
-    ListComponentsResponse, ListLocalDeploymentsRequest, ListLocalDeploymentsResponse, Message,
-    PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest,
-    PublishToIoTCoreResponse, PublishToTopicRequest, PublishToTopicResponse,
-    RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest,
-    ResumeComponentResponse, StopComponentRequest, StopComponentResponse,
-    SubscribeToIoTCoreRequest, SubscribeToTopicRequest, SubscribeToTopicResponse,
-    SubscriptionResponseMessage, UpdateConfigurationRequest, UpdateConfigurationResponse,
-};
+use crate::model::*;
 
 /// Default timeout for operations in seconds
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -410,37 +399,53 @@ impl GreengrassCoreIPCClient {
     /// Authorize action on some resource
     pub async fn authorize_client_device_action(
         &self,
-        _request: (), // TODO: Replace with AuthorizeClientDeviceActionRequest
-    ) -> Result<()> {
-        // TODO: Replace with AuthorizeClientDeviceActionResponse
-        todo!("Implement authorize_client_device_action")
+        request: AuthorizeClientDeviceActionRequest,
+    ) -> Result<AuthorizeClientDeviceActionResponse> {
+        self.send_request(
+            "AuthorizeClientDeviceAction",
+            "AuthorizeClientDeviceActionRequest",
+            &request,
+        )
+        .await
     }
 
     /// Get session token for a client device
     pub async fn get_client_device_auth_token(
         &self,
-        _request: (), // TODO: Replace with GetClientDeviceAuthTokenRequest
-    ) -> Result<()> {
-        // TODO: Replace with GetClientDeviceAuthTokenResponse
-        todo!("Implement get_client_device_auth_token")
+        request: GetClientDeviceAuthTokenRequest,
+    ) -> Result<GetClientDeviceAuthTokenResponse> {
+        self.send_request(
+            "GetClientDeviceAuthToken",
+            "GetClientDeviceAuthTokenRequest",
+            &request,
+        )
+        .await
     }
 
     /// Verify client device credentials
     pub async fn verify_client_device_identity(
         &self,
-        _request: (), // TODO: Replace with VerifyClientDeviceIdentityRequest
-    ) -> Result<()> {
-        // TODO: Replace with VerifyClientDeviceIdentityResponse
-        todo!("Implement verify_client_device_identity")
+        request: VerifyClientDeviceIdentityRequest,
+    ) -> Result<VerifyClientDeviceIdentityResponse> {
+        self.send_request(
+            "VerifyClientDeviceIdentity",
+            "VerifyClientDeviceIdentityRequest",
+            &request,
+        )
+        .await
     }
 
     /// Validate authorization token (NOTE: Only usable by stream manager)
     pub async fn validate_authorization_token(
         &self,
-        _request: (), // TODO: Replace with ValidateAuthorizationTokenRequest
-    ) -> Result<()> {
-        // TODO: Replace with ValidateAuthorizationTokenResponse
-        todo!("Implement validate_authorization_token")
+        request: ValidateAuthorizationTokenRequest,
+    ) -> Result<ValidateAuthorizationTokenResponse> {
+        self.send_request(
+            "ValidateAuthorizationToken",
+            "ValidateAuthorizationTokenRequest",
+            &request,
+        )
+        .await
     }
 
     // =============================================
@@ -450,19 +455,27 @@ impl GreengrassCoreIPCClient {
     /// Create a local deployment on the device
     pub async fn create_local_deployment(
         &self,
-        _request: (), // TODO: Replace with CreateLocalDeploymentRequest
-    ) -> Result<()> {
-        // TODO: Replace with CreateLocalDeploymentResponse
-        todo!("Implement create_local_deployment")
+        request: CreateLocalDeploymentRequest,
+    ) -> Result<CreateLocalDeploymentResponse> {
+        self.send_request(
+            "CreateLocalDeployment",
+            "CreateLocalDeploymentRequest",
+            &request,
+        )
+        .await
     }
 
     /// Cancel a local deployment on the device
     pub async fn cancel_local_deployment(
         &self,
-        _request: (), // TODO: Replace with CancelLocalDeploymentRequest
-    ) -> Result<()> {
-        // TODO: Replace with CancelLocalDeploymentResponse
-        todo!("Implement cancel_local_deployment")
+        request: CancelLocalDeploymentRequest,
+    ) -> Result<CancelLocalDeploymentResponse> {
+        self.send_request(
+            "CancelLocalDeployment",
+            "CancelLocalDeploymentRequest",
+            &request,
+        )
+        .await
     }
 
     /// Get the status of a local deployment with the given deployment ID
@@ -556,10 +569,14 @@ impl GreengrassCoreIPCClient {
     /// Defer the update of components by a given amount of time
     pub async fn defer_component_update(
         &self,
-        _request: (), // TODO: Replace with DeferComponentUpdateRequest
-    ) -> Result<()> {
-        // TODO: Replace with DeferComponentUpdateResponse
-        todo!("Implement defer_component_update")
+        request: DeferComponentUpdateRequest,
+    ) -> Result<DeferComponentUpdateResponse> {
+        self.send_request(
+            "DeferComponentUpdate",
+            "DeferComponentUpdateRequest",
+            &request,
+        )
+        .await
     }
 
     // =============================================
@@ -605,47 +622,50 @@ impl GreengrassCoreIPCClient {
     // State and Shadow Operations
     // =============================================
 
-    // /// Update state of a component
-    // pub async fn update_state(
-    //     &self,
-    //     request: crate::model::UpdateStateRequest,
-    // ) -> Result<crate::model::UpdateStateResponse> {
-    //     self.send_request("UpdateState", "UpdateStateRequest", &request)
-    //         .await
-    // }
-
-    // /// Retrieve a device shadow document stored by the local shadow service
-    // pub async fn get_thing_shadow(
-    //     &self,
-    //     request: crate::model::GetThingShadowRequest,
-    // ) -> Result<crate::model::GetThingShadowResponse> {
-    //     self.send_request("GetThingShadow", "GetThingShadowRequest", &request)
-    //         .await
-    // }
-
-    // /// Update a device shadow document stored by the local shadow service
-    // pub async fn update_thing_shadow(
-    //     &self,
-    //     request: crate::model::UpdateThingShadowRequest,
-    // ) -> Result<crate::model::UpdateThingShadowResponse> {
-    //     self.send_request("UpdateThingShadow", "UpdateThingShadowRequest", &request)
-    //         .await
-    // }
-
-    // /// Retrieve a device shadow document stored by the local shadow service
-    // pub async fn delete_thing_shadow(
-    //     &self,
-    //     request: crate::model::UpdateThingShadowRequest,
-    // ) -> Result<crate::model::UpdateThingShadowResponse> {
-    //     self.send_request("UpdateThingShadow", "UpdateThingShadowRequest", &request)
-    //         .await
-    // }
+    /// Update state of a component
+    pub async fn update_state(&self, request: UpdateStateRequest) -> Result<UpdateStateResponse> {
+        self.send_request("UpdateState", "UpdateStateRequest", &request)
+            .await
+    }
 
     /// Retrieve a device shadow document stored by the local shadow service
+    pub async fn get_thing_shadow(
+        &self,
+        request: GetThingShadowRequest,
+    ) -> Result<GetThingShadowResponse> {
+        self.send_request("GetThingShadow", "GetThingShadowRequest", &request)
+            .await
+    }
+
+    /// Update a device shadow document stored by the local shadow service
+    pub async fn update_thing_shadow(
+        &self,
+        request: UpdateThingShadowRequest,
+    ) -> Result<UpdateThingShadowResponse> {
+        self.send_request("UpdateThingShadow", "UpdateThingShadowRequest", &request)
+            .await
+    }
+
+    /// Delete a device shadow document stored by the local shadow service
+    pub async fn delete_thing_shadow(
+        &self,
+        request: DeleteThingShadowRequest,
+    ) -> Result<DeleteThingShadowResponse> {
+        self.send_request("DeleteThingShadow", "DeleteThingShadowRequest", &request)
+            .await
+    }
+
     /// List the named shadows for the specified thing
-    pub async fn list_named_shadows_for_thing(&self) -> Result<Vec<String>> {
-        // TODO: Replace with ListNamedShadowsForThingResponse
-        todo!("Implement list_named_shadows_for_thing")
+    pub async fn list_named_shadows_for_thing(
+        &self,
+        request: ListNamedShadowsForThingRequest,
+    ) -> Result<ListNamedShadowsForThingResponse> {
+        self.send_request(
+            "ListNamedShadowsForThing",
+            "ListNamedShadowsForThingRequest",
+            &request,
+        )
+        .await
     }
 
     // =============================================
@@ -655,10 +675,10 @@ impl GreengrassCoreIPCClient {
     /// Retrieve a secret stored in AWS Secrets Manager
     pub async fn get_secret_value(
         &self,
-        _request: (), // TODO: Replace with GetSecretValueRequest
-    ) -> Result<()> {
-        // TODO: Replace with GetSecretValueResponse
-        todo!("Implement get_secret_value")
+        request: GetSecretValueRequest,
+    ) -> Result<GetSecretValueResponse> {
+        self.send_request("GetSecretValue", "GetSecretValueRequest", &request)
+            .await
     }
 
     // =============================================
@@ -668,37 +688,79 @@ impl GreengrassCoreIPCClient {
     /// Subscribe to receive notification if GGC is about to update any components
     pub async fn subscribe_to_component_updates(
         &self,
-        _request: (), // TODO: Replace with SubscribeToComponentUpdatesRequest
-    ) -> Result<()> {
-        // TODO: Return appropriate streaming type like Subscription
-        todo!("Implement subscribe_to_component_updates")
+        request: SubscribeToComponentUpdatesRequest,
+    ) -> Result<StreamOperation<ComponentUpdatePolicyEvents>> {
+        self.send_subscription_request(
+            "SubscribeToComponentUpdates",
+            "SubscribeToComponentUpdatesRequest",
+            "ComponentUpdatePolicyEvents",
+            &request,
+        )
+        .await
     }
 
     /// Subscribe to be notified when GGC updates the configuration
     pub async fn subscribe_to_configuration_update(
         &self,
-        _request: (), // TODO: Replace with SubscribeToConfigurationUpdateRequest
-    ) -> Result<()> {
-        // TODO: Return appropriate streaming type like Subscription
-        todo!("Implement subscribe_to_configuration_update")
+        request: SubscribeToConfigurationUpdateRequest,
+    ) -> Result<StreamOperation<ConfigurationUpdateEvent>> {
+        self.send_subscription_request(
+            "SubscribeToConfigurationUpdate",
+            "SubscribeToConfigurationUpdateRequest",
+            "ConfigurationUpdateEvents",
+            &request,
+        )
+        .await
     }
 
     /// Subscribe to be notified when GGC is about to update configuration for this component
     pub async fn subscribe_to_validate_configuration_updates(
         &self,
-        _request: (), // TODO: Replace with SubscribeToValidateConfigurationUpdatesRequest
-    ) -> Result<()> {
-        // TODO: Return appropriate streaming type like Subscription
-        todo!("Implement subscribe_to_validate_configuration_updates")
+        request: SubscribeToValidateConfigurationUpdatesRequest,
+    ) -> Result<StreamOperation<ValidateConfigurationUpdateEvent>> {
+        self.send_subscription_request(
+            "SubscribeToValidateConfigurationUpdates",
+            "SubscribeToValidateConfigurationUpdatesRequest",
+            "ValidateConfigurationUpdateEvents",
+            &request,
+        )
+        .await
     }
 
     /// Create a subscription for new certificates
     pub async fn subscribe_to_certificate_updates(
         &self,
-        _request: (), // TODO: Replace with SubscribeToCertificateUpdatesRequest
-    ) -> Result<()> {
-        // TODO: Return appropriate streaming type like Subscription
-        todo!("Implement subscribe_to_certificate_updates")
+        request: SubscribeToCertificateUpdatesRequest,
+    ) -> Result<StreamOperation<CertificateUpdateEvent>> {
+        self.send_subscription_request(
+            "SubscribeToCertificateUpdates",
+            "SubscribeToCertificateUpdatesRequest",
+            "CertificateUpdateEvent",
+            &request,
+        )
+        .await
+    }
+
+    /// Publish component metrics
+    pub async fn put_component_metric(
+        &self,
+        request: PutComponentMetricRequest,
+    ) -> Result<PutComponentMetricResponse> {
+        self.send_request("PutComponentMetric", "PutComponentMetricRequest", &request)
+            .await
+    }
+
+    /// Create a debug password for local debugging
+    pub async fn create_debug_password(
+        &self,
+        request: CreateDebugPasswordRequest,
+    ) -> Result<CreateDebugPasswordResponse> {
+        self.send_request(
+            "CreateDebugPassword",
+            "CreateDebugPasswordRequest",
+            &request,
+        )
+        .await
     }
 
     /// Subscribe to a topic in AWS IoT message broker

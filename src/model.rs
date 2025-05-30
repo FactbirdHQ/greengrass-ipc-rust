@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use serde_with::{base64::Base64, serde_as, DeserializeAs, SerializeAs};
 
+
 /// Helper for serializing/deserializing Bytes as Vec<u8>
 struct BytesAsVec;
 
@@ -681,6 +682,612 @@ pub struct ValidateConfigurationUpdateEvent {
     /// The deployment ID associated with this validation request
     #[serde(rename = "deploymentId")]
     pub deployment_id: String,
+}
+
+// =============================================
+// Authorization and Client Device Operations
+// =============================================
+
+/// Request to authorize a client device action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizeClientDeviceActionRequest {
+    /// The session token for the client device from GetClientDeviceAuthToken
+    #[serde(rename = "clientDeviceAuthToken")]
+    pub client_device_auth_token: String,
+
+    /// The operation to authorize
+    pub operation: String,
+
+    /// The resource the client device performs the operation on
+    pub resource: String,
+}
+
+/// Response for authorize client device action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizeClientDeviceActionResponse {
+    /// Whether the client device is authorized to perform the operation on the resource
+    #[serde(rename = "isAuthorized")]
+    pub is_authorized: bool,
+}
+
+/// Client device credential information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientDeviceCredential {
+    /// The client device's X.509 device certificate
+    #[serde(rename = "clientDeviceCertificate")]
+    pub client_device_certificate: Option<String>,
+}
+
+/// Credential document for client device authentication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialDocument {
+    /// The client device's MQTT credentials
+    #[serde(rename = "mqttCredential")]
+    pub mqtt_credential: Option<MqttCredential>,
+}
+
+/// MQTT credential information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MqttCredential {
+    /// The client ID to used to connect
+    #[serde(rename = "clientId")]
+    pub client_id: Option<String>,
+
+    /// The client certificate in pem format
+    #[serde(rename = "certificatePem")]
+    pub certificate_pem: Option<String>,
+
+    /// The username (unused)
+    pub username: Option<String>,
+
+    /// The password (unused)
+    pub password: Option<String>,
+}
+
+/// Request to get client device auth token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetClientDeviceAuthTokenRequest {
+    /// The client device's credentials
+    pub credential: CredentialDocument,
+}
+
+/// Response for get client device auth token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetClientDeviceAuthTokenResponse {
+    /// The session token for the client device
+    #[serde(rename = "clientDeviceAuthToken")]
+    pub client_device_auth_token: String,
+}
+
+/// Request to verify client device identity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyClientDeviceIdentityRequest {
+    /// The client device's credentials
+    pub credential: ClientDeviceCredential,
+}
+
+/// Response for verify client device identity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyClientDeviceIdentityResponse {
+    /// Whether the client device's identity is valid
+    #[serde(rename = "isValidClientDevice")]
+    pub is_valid_client_device: bool,
+}
+
+/// Request to validate authorization token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateAuthorizationTokenRequest {
+    /// The token to validate
+    pub token: String,
+}
+
+/// Response for validate authorization token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateAuthorizationTokenResponse {
+    /// Whether the token is valid
+    #[serde(rename = "isValid")]
+    pub is_valid: bool,
+}
+
+// =============================================
+// Local Deployment Operations
+// =============================================
+
+/// Failure handling policy for deployments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FailureHandlingPolicy {
+    #[serde(rename = "ROLLBACK")]
+    Rollback,
+    #[serde(rename = "DO_NOTHING")]
+    DoNothing,
+}
+
+/// System resource limits for components
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemResourceLimits {
+    /// The maximum amount of RAM (in kilobytes) that this component's processes can use
+    pub memory: Option<u64>,
+
+    /// The maximum amount of CPU time that this component's processes can use
+    pub cpus: Option<f64>,
+}
+
+/// Run with information for components
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunWithInfo {
+    /// The POSIX system user and, optionally, group to use to run this component on Linux
+    #[serde(rename = "posixUser")]
+    pub posix_user: Option<String>,
+
+    /// The Windows user to use to run this component on Windows
+    #[serde(rename = "windowsUser")]
+    pub windows_user: Option<String>,
+
+    /// The system resource limits to apply to this component's processes
+    #[serde(rename = "systemResourceLimits")]
+    pub system_resource_limits: Option<SystemResourceLimits>,
+}
+
+/// Request to create a local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLocalDeploymentRequest {
+    /// The thing group name the deployment is targeting
+    #[serde(rename = "groupName")]
+    pub group_name: Option<String>,
+
+    /// Map of component name to version to add to the group's existing root components
+    #[serde(rename = "rootComponentVersionsToAdd")]
+    pub root_component_versions_to_add: Option<std::collections::HashMap<String, String>>,
+
+    /// List of components that need to be removed from the group
+    #[serde(rename = "rootComponentsToRemove")]
+    pub root_components_to_remove: Option<Vec<String>>,
+
+    /// Map of component names to configuration
+    #[serde(rename = "componentToConfiguration")]
+    pub component_to_configuration: Option<std::collections::HashMap<String, serde_json::Value>>,
+
+    /// Map of component names to component run as info
+    #[serde(rename = "componentToRunWithInfo")]
+    pub component_to_run_with_info: Option<std::collections::HashMap<String, RunWithInfo>>,
+
+    /// All recipes files in this directory will be copied over to the Greengrass package store
+    #[serde(rename = "recipeDirectoryPath")]
+    pub recipe_directory_path: Option<String>,
+
+    /// All artifact files in this directory will be copied over to the Greengrass package store
+    #[serde(rename = "artifactsDirectoryPath")]
+    pub artifacts_directory_path: Option<String>,
+
+    /// Deployment failure handling policy
+    #[serde(rename = "failureHandlingPolicy")]
+    pub failure_handling_policy: Option<FailureHandlingPolicy>,
+}
+
+/// Response for create local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLocalDeploymentResponse {
+    /// The ID of the local deployment that the request created
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: Option<String>,
+}
+
+/// Request to cancel a local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelLocalDeploymentRequest {
+    /// The ID of the local deployment to cancel
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: Option<String>,
+}
+
+/// Response for cancel local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelLocalDeploymentResponse {
+    /// A message about the cancellation result
+    pub message: Option<String>,
+}
+
+// =============================================
+// Secret Management Operations
+// =============================================
+
+/// Secret value from AWS Secrets Manager
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretValue {
+    /// The decrypted part of the protected secret information as a string
+    #[serde(rename = "secretString")]
+    pub secret_string: Option<String>,
+
+    /// The decrypted part of the protected secret information as binary data
+    #[serde_as(as = "Option<Base64>")]
+    #[serde(rename = "secretBinary")]
+    pub secret_binary: Option<Bytes>,
+}
+
+/// Request to get secret value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSecretValueRequest {
+    /// The name of the secret to get
+    #[serde(rename = "secretId")]
+    pub secret_id: String,
+
+    /// The ID of the version to get
+    #[serde(rename = "versionId")]
+    pub version_id: Option<String>,
+
+    /// The staging label of the version to get
+    #[serde(rename = "versionStage")]
+    pub version_stage: Option<String>,
+
+    /// Whether to fetch the latest secret from cloud when the request is handled
+    pub refresh: Option<bool>,
+}
+
+/// Response for get secret value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSecretValueResponse {
+    /// The ID of the secret
+    #[serde(rename = "secretId")]
+    pub secret_id: String,
+
+    /// The ID of this version of the secret
+    #[serde(rename = "versionId")]
+    pub version_id: String,
+
+    /// The list of staging labels attached to this version of the secret
+    #[serde(rename = "versionStage")]
+    pub version_stage: Vec<String>,
+
+    /// The value of this version of the secret
+    #[serde(rename = "secretValue")]
+    pub secret_value: SecretValue,
+}
+
+// =============================================
+// Shadow Operations
+// =============================================
+
+/// Request to list named shadows for a thing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamedShadowsForThingRequest {
+    /// The name of the thing
+    #[serde(rename = "thingName")]
+    pub thing_name: String,
+
+    /// The token to retrieve the next set of results
+    #[serde(rename = "nextToken")]
+    pub next_token: Option<String>,
+
+    /// The number of shadow names to return in each call
+    #[serde(rename = "pageSize")]
+    pub page_size: Option<u32>,
+}
+
+/// Response for list named shadows for thing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamedShadowsForThingResponse {
+    /// The list of shadow names
+    pub results: Vec<String>,
+
+    /// The date and time that the response was generated
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+
+    /// The token value to use in paged requests to retrieve the next page
+    #[serde(rename = "nextToken")]
+    pub next_token: Option<String>,
+}
+
+/// Reported lifecycle state for components
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ReportedLifecycleState {
+    #[serde(rename = "RUNNING")]
+    Running,
+    #[serde(rename = "ERRORED")]
+    Errored,
+}
+
+/// Request to update component state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateStateRequest {
+    /// The state to set this component to
+    pub state: ReportedLifecycleState,
+}
+
+/// Response for update state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateStateResponse {}
+
+/// Request to get thing shadow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetThingShadowRequest {
+    /// The name of the thing
+    #[serde(rename = "thingName")]
+    pub thing_name: String,
+
+    /// The name of the shadow
+    #[serde(rename = "shadowName")]
+    pub shadow_name: Option<String>,
+}
+
+/// Response for get thing shadow
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetThingShadowResponse {
+    /// The response state document as a JSON encoded blob
+    #[serde_as(as = "Base64")]
+    pub payload: Bytes,
+}
+
+/// Request to update thing shadow
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateThingShadowRequest {
+    /// The name of the thing
+    #[serde(rename = "thingName")]
+    pub thing_name: String,
+
+    /// The name of the shadow
+    #[serde(rename = "shadowName")]
+    pub shadow_name: Option<String>,
+
+    /// The request state document as a JSON encoded blob
+    #[serde_as(as = "Base64")]
+    pub payload: Bytes,
+}
+
+/// Response for update thing shadow
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateThingShadowResponse {
+    /// The response state document as a JSON encoded blob
+    #[serde_as(as = "Base64")]
+    pub payload: Bytes,
+}
+
+/// Request to delete thing shadow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteThingShadowRequest {
+    /// The name of the thing
+    #[serde(rename = "thingName")]
+    pub thing_name: String,
+
+    /// The name of the shadow
+    #[serde(rename = "shadowName")]
+    pub shadow_name: Option<String>,
+}
+
+/// Response for delete thing shadow
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteThingShadowResponse {
+    /// An empty response state document
+    #[serde_as(as = "Base64")]
+    pub payload: Bytes,
+}
+
+// =============================================
+// Component Update Operations
+// =============================================
+
+/// Request to defer component update
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeferComponentUpdateRequest {
+    /// The ID of the AWS IoT Greengrass deployment to defer
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+
+    /// The name of the component for which to defer updates
+    pub message: Option<String>,
+
+    /// The amount of time in milliseconds for which to defer the update
+    #[serde(rename = "recheckAfterMs")]
+    pub recheck_after_ms: Option<u64>,
+}
+
+/// Response for defer component update
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeferComponentUpdateResponse {}
+
+/// Pre-component update event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreComponentUpdateEvent {
+    /// The ID of the AWS IoT Greengrass deployment that updates the component
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+
+    /// Whether or not Greengrass needs to restart to apply the update
+    #[serde(rename = "isGgcRestarting")]
+    pub is_ggc_restarting: bool,
+}
+
+/// Post-component update event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostComponentUpdateEvent {
+    /// The ID of the AWS IoT Greengrass deployment that updated the component
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+}
+
+/// Component update policy events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentUpdatePolicyEvents {
+    /// An event that indicates that the Greengrass wants to update a component
+    #[serde(rename = "preUpdateEvent")]
+    pub pre_update_event: Option<PreComponentUpdateEvent>,
+
+    /// An event that indicates that the nucleus updated a component
+    #[serde(rename = "postUpdateEvent")]
+    pub post_update_event: Option<PostComponentUpdateEvent>,
+}
+
+/// Request to subscribe to component updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToComponentUpdatesRequest {}
+
+/// Response for subscribe to component updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToComponentUpdatesResponse {}
+
+// =============================================
+// Certificate Operations
+// =============================================
+
+/// Certificate type enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CertificateType {
+    #[serde(rename = "SERVER")]
+    Server,
+}
+
+/// Certificate options for subscription
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificateOptions {
+    /// The types of certificate updates to subscribe to
+    #[serde(rename = "certificateType")]
+    pub certificate_type: CertificateType,
+}
+
+/// Certificate update information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificateUpdate {
+    /// The private key in pem format
+    #[serde(rename = "privateKey")]
+    pub private_key: Option<String>,
+
+    /// The public key in pem format
+    #[serde(rename = "publicKey")]
+    pub public_key: Option<String>,
+
+    /// The certificate in pem format
+    pub certificate: Option<String>,
+
+    /// List of CA certificates in pem format
+    #[serde(rename = "caCertificates")]
+    pub ca_certificates: Option<Vec<String>>,
+}
+
+/// Certificate update event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificateUpdateEvent {
+    /// The information about the new certificate
+    #[serde(rename = "certificateUpdate")]
+    pub certificate_update: Option<CertificateUpdate>,
+}
+
+/// Request to subscribe to certificate updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToCertificateUpdatesRequest {
+    /// Certificate options for the subscription
+    #[serde(rename = "certificateOptions")]
+    pub certificate_options: CertificateOptions,
+}
+
+/// Response for subscribe to certificate updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToCertificateUpdatesResponse {}
+
+// =============================================
+// Metrics Operations
+// =============================================
+
+/// Metric unit type enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MetricUnitType {
+    #[serde(rename = "BYTES")]
+    Bytes,
+    #[serde(rename = "BYTES_PER_SECOND")]
+    BytesPerSecond,
+    #[serde(rename = "COUNT")]
+    Count,
+    #[serde(rename = "COUNT_PER_SECOND")]
+    CountPerSecond,
+    #[serde(rename = "MEGABYTES")]
+    Megabytes,
+    #[serde(rename = "SECONDS")]
+    Seconds,
+}
+
+/// Metric information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Metric {
+    /// The metric name
+    pub name: String,
+
+    /// The metric unit
+    pub unit: MetricUnitType,
+
+    /// The metric value
+    pub value: f64,
+}
+
+/// Request to put component metric
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutComponentMetricRequest {
+    /// The list of metrics to publish
+    pub metrics: Vec<Metric>,
+}
+
+/// Response for put component metric
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutComponentMetricResponse {}
+
+// =============================================
+// Debug Operations
+// =============================================
+
+/// Request to create debug password
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDebugPasswordRequest {}
+
+/// Response for create debug password
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDebugPasswordResponse {
+    /// The generated password
+    pub password: String,
+
+    /// The username
+    pub username: String,
+
+    /// When the password expires
+    #[serde(rename = "passwordExpiration")]
+    pub password_expiration: chrono::DateTime<chrono::Utc>,
+
+    /// SHA256 hash of the certificate
+    #[serde(rename = "certificateSHA256Hash")]
+    pub certificate_sha256_hash: Option<String>,
+
+    /// SHA1 hash of the certificate
+    #[serde(rename = "certificateSHA1Hash")]
+    pub certificate_sha1_hash: Option<String>,
+}
+
+// =============================================
+// Additional Enums for Completeness
+// =============================================
+
+/// Detailed deployment status enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DetailedDeploymentStatus {
+    #[serde(rename = "SUCCESSFUL")]
+    Successful,
+    #[serde(rename = "FAILED_NO_STATE_CHANGE")]
+    FailedNoStateChange,
+    #[serde(rename = "FAILED_ROLLBACK_NOT_REQUESTED")]
+    FailedRollbackNotRequested,
+    #[serde(rename = "FAILED_ROLLBACK_COMPLETE")]
+    FailedRollbackComplete,
+    #[serde(rename = "REJECTED")]
+    Rejected,
+}
+
+/// Payload format enumeration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PayloadFormat {
+    #[serde(rename = "0")]
+    Bytes,
+    #[serde(rename = "1")]
+    Utf8,
 }
 
 #[cfg(test)]
