@@ -16,7 +16,8 @@ use crate::error::{Error, Result};
 use crate::event_stream::Header;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
-    BinaryMessage, GetLocalDeploymentStatusRequest, GetLocalDeploymentStatusResponse,
+    BinaryMessage, GetComponentDetailsRequest, GetComponentDetailsResponse, 
+    GetLocalDeploymentStatusRequest, GetLocalDeploymentStatusResponse,
     IoTCoreMessage, ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
     ListLocalDeploymentsResponse, Message, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
     PublishToTopicRequest, PublishToTopicResponse, SubscribeToIoTCoreRequest, 
@@ -733,10 +734,95 @@ impl GreengrassCoreIPCClient {
     /// Get the status and version of the component with the given component name
     pub async fn get_component_details(
         &self,
-        _request: (), // TODO: Replace with GetComponentDetailsRequest
-    ) -> Result<()> {
-        // TODO: Replace with GetComponentDetailsResponse
-        todo!("Implement get_component_details")
+        request: GetComponentDetailsRequest,
+    ) -> Result<GetComponentDetailsResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#GetComponentDetails".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#GetComponentDetailsRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending GetComponentDetails operation on stream {} for component '{}'",
+            stream_id, request.component_name
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("GetComponentDetails failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: GetComponentDetailsResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Request for a list of components

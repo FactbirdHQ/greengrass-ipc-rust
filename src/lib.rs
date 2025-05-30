@@ -20,10 +20,11 @@ pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
 pub use model::{
     BinaryMessage, ComponentDetails, ComponentState, DeploymentStatus, DeploymentStatusDetails,
-    IoTCoreMessage, JsonMessage, ListComponentsRequest, ListComponentsResponse,
-    ListLocalDeploymentsRequest, ListLocalDeploymentsResponse, LocalDeployment, Message,
-    MessageContext, MqttMessage, PublishToIoTCoreRequest, PublishToIoTCoreResponse, QoS,
-    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, SubscriptionResponseMessage,
+    GetComponentDetailsRequest, GetComponentDetailsResponse, IoTCoreMessage, JsonMessage, 
+    ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
+    ListLocalDeploymentsResponse, LocalDeployment, Message, MessageContext, MqttMessage, 
+    PublishToIoTCoreRequest, PublishToIoTCoreResponse, QoS, SubscribeToIoTCoreRequest, 
+    SubscribeToIoTCoreResponse, SubscriptionResponseMessage,
 };
 
 /// Connect to the Greengrass Core IPC service with default parameters.

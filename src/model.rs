@@ -439,6 +439,22 @@ pub enum ComponentState {
     Finished,
 }
 
+/// Request to get component details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetComponentDetailsRequest {
+    /// The name of the component to get details for
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Response to get component details request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetComponentDetailsResponse {
+    /// The component details
+    #[serde(rename = "componentDetails")]
+    pub component_details: ComponentDetails,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

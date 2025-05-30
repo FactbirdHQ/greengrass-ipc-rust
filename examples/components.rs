@@ -4,7 +4,7 @@
 //! information about all installed components.
 
 use greengrass_ipc_rust::{
-    model::ComponentState,
+    model::{ComponentState, GetComponentDetailsRequest},
     GreengrassCoreIPCClient,
 };
 
@@ -46,6 +46,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if idx < components.len() - 1 {
                             println!("{:-<80}", "");
+                        }
+                    }
+
+                    // Demonstrate get_component_details for multiple components
+                    if let Some(first_component) = components.first() {
+                        println!("\n{:-<80}", "");
+                        println!("\nGetting detailed information for '{}'...\n", first_component.component_name);
+
+                        let details_request = GetComponentDetailsRequest {
+                            component_name: first_component.component_name.clone(),
+                        };
+
+                        match client.get_component_details(details_request).await {
+                            Ok(details_response) => {
+                                let details = &details_response.component_details;
+                                println!("Detailed component information retrieved successfully:");
+                                println!("  Name: {}", details.component_name);
+                                println!("  Version: {}", details.version);
+                                println!("  State: {}", format_state(details.state));
+
+                                if let Some(config) = &details.configuration {
+                                    println!("  Configuration: {}", 
+                                        serde_json::to_string_pretty(config)
+                                            .unwrap_or_else(|_| "Failed to format configuration".to_string())
+                                    );
+                                } else {
+                                    println!("  Configuration: None");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to get component details: {}", e);
+                            }
+                        }
+                    }
+
+                    // Test with a component that has null configuration
+                    if let Some(service_component) = components.iter().find(|c| c.component_name == "UpdateSystemPolicyService") {
+                        println!("\n{:-<80}", "");
+                        println!("\nGetting detailed information for '{}'...\n", service_component.component_name);
+
+                        let details_request = GetComponentDetailsRequest {
+                            component_name: service_component.component_name.clone(),
+                        };
+
+                        match client.get_component_details(details_request).await {
+                            Ok(details_response) => {
+                                let details = &details_response.component_details;
+                                println!("Detailed component information retrieved successfully:");
+                                println!("  Name: {}", details.component_name);
+                                println!("  Version: {}", details.version);
+                                println!("  State: {}", format_state(details.state));
+
+                                if let Some(config) = &details.configuration {
+                                    println!("  Configuration: {}", 
+                                        serde_json::to_string_pretty(config)
+                                            .unwrap_or_else(|_| "Failed to format configuration".to_string())
+                                    );
+                                } else {
+                                    println!("  Configuration: None");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to get component details: {}", e);
+                            }
                         }
                     }
                 }
