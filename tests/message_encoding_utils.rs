@@ -325,29 +325,6 @@ pub fn create_list_components_request() -> EventStreamMessage {
     create_test_message("ListComponents", "Request", Bytes::from(payload), None)
 }
 
-/// Create a standard get configuration request message for testing
-pub fn create_get_configuration_request(
-    component_name: &str,
-    key_path: &[&str],
-) -> EventStreamMessage {
-    // For testing purposes, we'll create a simple JSON payload with key path as array
-    let key_path_json = key_path
-        .iter()
-        .map(|k| format!("\"{}\"", k))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let payload = format!(
-        r#"{{
-        "componentName": "{}",
-        "keyPath": [{}]
-    }}"#,
-        component_name, key_path_json
-    );
-
-    create_test_message("GetConfiguration", "Request", Bytes::from(payload), None)
-}
-
 /// Create a standard subscribe to configuration update request message for testing
 pub fn create_subscribe_configuration_update_request(
     component_name: &str,
@@ -360,13 +337,22 @@ pub fn create_subscribe_configuration_update_request(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let payload = format!(
-        r#"{{
+    let payload = if component_name.is_empty() {
+        format!(
+            r#"{{
+        "keyPath": [{}]
+    }}"#,
+            key_path_json
+        )
+    } else {
+        format!(
+            r#"{{
         "componentName": "{}",
         "keyPath": [{}]
     }}"#,
-        component_name, key_path_json
-    );
+            component_name, key_path_json
+        )
+    };
 
     create_test_message(
         "SubscribeToConfigurationUpdate",
@@ -377,16 +363,9 @@ pub fn create_subscribe_configuration_update_request(
 }
 
 /// Create a standard subscribe to validate configuration updates request message for testing
-pub fn create_subscribe_validate_configuration_updates_request(
-    component_name: &str,
-) -> EventStreamMessage {
+pub fn create_subscribe_validate_configuration_updates_request() -> EventStreamMessage {
     // For testing purposes, we'll create a simple JSON payload
-    let payload = format!(
-        r#"{{
-        "componentName": "{}"
-    }}"#,
-        component_name
-    );
+    let payload = "{}";
 
     create_test_message(
         "SubscribeToValidateConfigurationUpdates",
@@ -398,9 +377,9 @@ pub fn create_subscribe_validate_configuration_updates_request(
 
 /// Create a standard update configuration request message for testing
 pub fn create_update_configuration_request(
-    component_name: &str,
     key_path: &[&str],
     value_json: &str,
+    timestamp: u64,
 ) -> EventStreamMessage {
     // For testing purposes, we'll create a simple JSON payload with key path as array
     let key_path_json = key_path
@@ -411,14 +390,46 @@ pub fn create_update_configuration_request(
 
     let payload = format!(
         r#"{{
-        "componentName": "{}",
         "keyPath": [{}],
-        "valueToMerge": {}
+        "valueToMerge": {},
+        "timestamp": {}
     }}"#,
-        component_name, key_path_json, value_json
+        key_path_json, value_json, timestamp
     );
 
     create_test_message("UpdateConfiguration", "Request", Bytes::from(payload), None)
+}
+
+/// Create a standard get configuration request message for testing
+pub fn create_get_configuration_request(
+    component_name: &str,
+    key_path: &[&str],
+) -> EventStreamMessage {
+    // For testing purposes, we'll create a simple JSON payload with key path as array
+    let key_path_json = key_path
+        .iter()
+        .map(|k| format!("\"{}\"", k))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let payload = if component_name.is_empty() {
+        format!(
+            r#"{{
+        "keyPath": [{}]
+    }}"#,
+            key_path_json
+        )
+    } else {
+        format!(
+            r#"{{
+        "componentName": "{}",
+        "keyPath": [{}]
+    }}"#,
+            component_name, key_path_json
+        )
+    };
+
+    create_test_message("GetConfiguration", "Request", Bytes::from(payload), None)
 }
 
 /// Create a standard send configuration validity report request message for testing

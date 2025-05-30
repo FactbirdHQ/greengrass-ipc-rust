@@ -19,14 +19,21 @@ pub use client::{GreengrassCoreIPCClient, IoTCoreSubscription, Subscription};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
 pub use model::{
-    BinaryMessage, ComponentDetails, ComponentState, DeploymentStatus, DeploymentStatusDetails,
-    GetComponentDetailsRequest, GetComponentDetailsResponse, IoTCoreMessage, JsonMessage, 
+    BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent, 
+    ConfigurationValidityReport, ConfigurationValidityStatus, DeploymentStatus, 
+    DeploymentStatusDetails, GetComponentDetailsRequest, GetComponentDetailsResponse,
+    GetConfigurationRequest, GetConfigurationResponse, IoTCoreMessage, JsonMessage, 
     ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
     ListLocalDeploymentsResponse, LocalDeployment, Message, MessageContext, MqttMessage, 
     PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
     QoS, RequestStatus, RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest, 
-    ResumeComponentResponse, StopComponentRequest, StopComponentResponse, SubscribeToIoTCoreRequest, 
-    SubscribeToIoTCoreResponse, SubscriptionResponseMessage,
+    ResumeComponentResponse, SendConfigurationValidityReportRequest, 
+    SendConfigurationValidityReportResponse, StopComponentRequest, StopComponentResponse, 
+    SubscribeToConfigurationUpdateRequest, SubscribeToConfigurationUpdateResponse,
+    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, 
+    SubscribeToValidateConfigurationUpdatesRequest, SubscribeToValidateConfigurationUpdatesResponse,
+    SubscriptionResponseMessage, UpdateConfigurationRequest, UpdateConfigurationResponse,
+    ValidateConfigurationUpdateEvent,
 };
 
 /// Connect to the Greengrass Core IPC service with default parameters.

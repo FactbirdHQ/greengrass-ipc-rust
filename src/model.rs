@@ -547,6 +547,142 @@ pub enum RequestStatus {
     Failed,
 }
 
+// =============================================
+// Configuration Operations
+// =============================================
+
+/// Request to get a configuration value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetConfigurationRequest {
+    /// The name of the component to get configuration for (optional, defaults to calling component)
+    #[serde(rename = "componentName", skip_serializing_if = "Option::is_none")]
+    pub component_name: Option<String>,
+
+    /// The key path to get the value for
+    #[serde(rename = "keyPath")]
+    pub key_path: Vec<String>,
+}
+
+/// Response to get configuration request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetConfigurationResponse {
+    /// The configuration value
+    #[serde(rename = "value")]
+    pub value: serde_json::Value,
+
+    /// The component name
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Request to update a configuration value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateConfigurationRequest {
+    /// The key path to update
+    #[serde(rename = "keyPath")]
+    pub key_path: Vec<String>,
+
+    /// The value to merge at the specified key path
+    #[serde(rename = "valueToMerge")]
+    pub value_to_merge: serde_json::Value,
+
+    /// The current Unix epoch time in milliseconds for concurrency control
+    #[serde(rename = "timestamp")]
+    pub timestamp: u64,
+}
+
+/// Response to update configuration request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateConfigurationResponse {}
+
+/// Configuration validity status
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigurationValidityStatus {
+    /// The configuration is accepted
+    #[serde(rename = "ACCEPTED")]
+    Accepted,
+
+    /// The configuration is rejected
+    #[serde(rename = "REJECTED")]
+    Rejected,
+}
+
+/// Configuration validity report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigurationValidityReport {
+    /// The status of the configuration validation
+    #[serde(rename = "status")]
+    pub status: ConfigurationValidityStatus,
+
+    /// The deployment ID associated with this validation
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+
+    /// Optional message describing the validation result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Request to send configuration validity report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendConfigurationValidityReportRequest {
+    /// The configuration validity report
+    #[serde(rename = "configurationValidityReport")]
+    pub configuration_validity_report: ConfigurationValidityReport,
+}
+
+/// Response to send configuration validity report request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendConfigurationValidityReportResponse {}
+
+/// Request to subscribe to configuration updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToConfigurationUpdateRequest {
+    /// The name of the component to subscribe to configuration updates for (optional, defaults to calling component)
+    #[serde(rename = "componentName", skip_serializing_if = "Option::is_none")]
+    pub component_name: Option<String>,
+
+    /// The key path to subscribe to updates for
+    #[serde(rename = "keyPath")]
+    pub key_path: Vec<String>,
+}
+
+/// Response to subscribe to configuration update request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToConfigurationUpdateResponse {}
+
+/// Request to subscribe to validate configuration updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToValidateConfigurationUpdatesRequest {}
+
+/// Response to subscribe to validate configuration updates request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeToValidateConfigurationUpdatesResponse {}
+
+/// A configuration update event message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigurationUpdateEvent {
+    /// The name of the component whose configuration was updated
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+
+    /// The key path that was updated
+    #[serde(rename = "keyPath")]
+    pub key_path: Vec<String>,
+}
+
+/// A configuration validation event message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidateConfigurationUpdateEvent {
+    /// The configuration to validate
+    #[serde(rename = "configuration")]
+    pub configuration: serde_json::Value,
+
+    /// The deployment ID associated with this validation request
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

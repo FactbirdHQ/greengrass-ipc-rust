@@ -16,15 +16,17 @@ use crate::error::{Error, Result};
 use crate::event_stream::Header;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
-    BinaryMessage, GetComponentDetailsRequest, GetComponentDetailsResponse, 
-    GetLocalDeploymentStatusRequest, GetLocalDeploymentStatusResponse,
-    IoTCoreMessage, ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
-    ListLocalDeploymentsResponse, Message, PauseComponentRequest, PauseComponentResponse,
-    PublishToIoTCoreRequest, PublishToIoTCoreResponse, PublishToTopicRequest,
-    PublishToTopicResponse, RestartComponentRequest, RestartComponentResponse,
-    ResumeComponentRequest, ResumeComponentResponse, StopComponentRequest, StopComponentResponse,
-    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, SubscribeToTopicRequest, 
-    SubscribeToTopicResponse, SubscriptionResponseMessage,
+    BinaryMessage, GetComponentDetailsRequest, GetComponentDetailsResponse,
+    GetConfigurationRequest, GetConfigurationResponse, GetLocalDeploymentStatusRequest,
+    GetLocalDeploymentStatusResponse, IoTCoreMessage, ListComponentsRequest,
+    ListComponentsResponse, ListLocalDeploymentsRequest, ListLocalDeploymentsResponse, Message,
+    PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest,
+    PublishToIoTCoreResponse, PublishToTopicRequest, PublishToTopicResponse,
+    RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest,
+    ResumeComponentResponse, StopComponentRequest, StopComponentResponse,
+    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, SubscribeToTopicRequest,
+    SubscribeToTopicResponse, SubscriptionResponseMessage, UpdateConfigurationRequest,
+    UpdateConfigurationResponse,
 };
 
 /// Default timeout for operations in seconds
@@ -771,7 +773,8 @@ impl GreengrassCoreIPCClient {
         // Send the message over the connection
         log::debug!(
             "Sending GetComponentDetails operation on stream {} for component '{}'",
-            stream_id, request.component_name
+            stream_id,
+            request.component_name
         );
         self.connection.send_message(&event_message).await?;
 
@@ -863,10 +866,7 @@ impl GreengrassCoreIPCClient {
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
-        log::debug!(
-            "Sending ListComponents operation on stream {}",
-            stream_id
-        );
+        log::debug!("Sending ListComponents operation on stream {}", stream_id);
         self.connection.send_message(&event_message).await?;
 
         log::debug!("Waiting for response on stream {}...", stream_id);
@@ -959,7 +959,8 @@ impl GreengrassCoreIPCClient {
         // Send the message over the connection
         log::debug!(
             "Sending RestartComponent operation on stream {} for component '{}'",
-            stream_id, request.component_name
+            stream_id,
+            request.component_name
         );
         self.connection.send_message(&event_message).await?;
 
@@ -1053,7 +1054,8 @@ impl GreengrassCoreIPCClient {
         // Send the message over the connection
         log::debug!(
             "Sending StopComponent operation on stream {} for component '{}'",
-            stream_id, request.component_name
+            stream_id,
+            request.component_name
         );
         self.connection.send_message(&event_message).await?;
 
@@ -1147,7 +1149,8 @@ impl GreengrassCoreIPCClient {
         // Send the message over the connection
         log::debug!(
             "Sending PauseComponent operation on stream {} for component '{}'",
-            stream_id, request.component_name
+            stream_id,
+            request.component_name
         );
         self.connection.send_message(&event_message).await?;
 
@@ -1241,7 +1244,8 @@ impl GreengrassCoreIPCClient {
         // Send the message over the connection
         log::debug!(
             "Sending ResumeComponent operation on stream {} for component '{}'",
-            stream_id, request.component_name
+            stream_id,
+            request.component_name
         );
         self.connection.send_message(&event_message).await?;
 
@@ -1306,15 +1310,6 @@ impl GreengrassCoreIPCClient {
         todo!("Implement defer_component_update")
     }
 
-    /// Send component metrics (NOTE: Only usable by AWS components)
-    pub async fn put_component_metric(
-        &self,
-        _request: (), // TODO: Replace with PutComponentMetricRequest
-    ) -> Result<()> {
-        // TODO: Replace with PutComponentMetricResponse
-        todo!("Implement put_component_metric")
-    }
-
     // =============================================
     // Configuration Operations
     // =============================================
@@ -1322,28 +1317,280 @@ impl GreengrassCoreIPCClient {
     /// Get value of a given key from the configuration
     pub async fn get_configuration(
         &self,
-        _request: (), // TODO: Replace with GetConfigurationRequest
-    ) -> Result<()> {
-        // TODO: Replace with GetConfigurationResponse
-        todo!("Implement get_configuration")
+        request: GetConfigurationRequest,
+    ) -> Result<GetConfigurationResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#GetConfiguration".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#GetConfigurationRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!("Sending GetConfiguration operation on stream {}", stream_id);
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("GetConfiguration failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: GetConfigurationResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Update this component's configuration by replacing the value of given keyName
     pub async fn update_configuration(
         &self,
-        _request: (), // TODO: Replace with UpdateConfigurationRequest
-    ) -> Result<()> {
-        // TODO: Replace with UpdateConfigurationResponse
-        todo!("Implement update_configuration")
+        request: UpdateConfigurationRequest,
+    ) -> Result<UpdateConfigurationResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#UpdateConfiguration".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#UpdateConfigurationRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending UpdateConfiguration operation on stream {}",
+            stream_id
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("UpdateConfiguration failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: UpdateConfigurationResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Send configuration validity report
     pub async fn send_configuration_validity_report(
         &self,
-        _request: (), // TODO: Replace with SendConfigurationValidityReportRequest
-    ) -> Result<()> {
-        // TODO: Replace with SendConfigurationValidityReportResponse
-        todo!("Implement send_configuration_validity_report")
+        request: crate::model::SendConfigurationValidityReportRequest,
+    ) -> Result<crate::model::SendConfigurationValidityReportResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#SendConfigurationValidityReport".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#SendConfigurationValidityReportRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending SendConfigurationValidityReport operation on stream {}",
+            stream_id
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("SendConfigurationValidityReport failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: crate::model::SendConfigurationValidityReportResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     // =============================================
@@ -1403,19 +1650,6 @@ impl GreengrassCoreIPCClient {
     ) -> Result<()> {
         // TODO: Replace with GetSecretValueResponse
         todo!("Implement get_secret_value")
-    }
-
-    // =============================================
-    // Debug Operations
-    // =============================================
-
-    /// Generate a password for the LocalDebugConsole component
-    pub async fn create_debug_password(
-        &self,
-        _request: (), // TODO: Replace with CreateDebugPasswordRequest
-    ) -> Result<()> {
-        // TODO: Replace with CreateDebugPasswordResponse
-        todo!("Implement create_debug_password")
     }
 
     // =============================================
