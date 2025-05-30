@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Try to get the entire configuration first (empty key path)
     let get_all_config_request = GetConfigurationRequest {
         component_name: None, // None means calling component's own configuration
-        key_path: vec![], // Getting the entire configuration
+        key_path: vec![],     // Getting the entire configuration
     };
 
     match client.get_configuration(get_all_config_request).await {
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_millis() as u64;
-    
+
     let test_value = serde_json::json!("example_value");
     let update_config_request = UpdateConfigurationRequest {
         key_path: vec!["myTestKey".to_string()],
@@ -166,86 +166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!();
-
-    // =============================================
-    // Send Configuration Validity Report Example
-    // =============================================
-    println!("5. Sending configuration validity report...");
-    println!("{:-<60}", "");
-
-    let validity_report = ConfigurationValidityReport {
-        status: ConfigurationValidityStatus::Accepted,
-        deployment_id: "example-deployment-123".to_string(),
-        message: Some("Configuration is valid and accepted".to_string()),
-    };
-
-    let validity_request = SendConfigurationValidityReportRequest {
-        configuration_validity_report: validity_report.clone(),
-    };
-
-    match client
-        .send_configuration_validity_report(validity_request)
-        .await
-    {
-        Ok(_) => {
-            println!("✓ Configuration validity report sent successfully:");
-            println!("  Status: {:?}", validity_report.status);
-            println!("  Deployment ID: {}", validity_report.deployment_id);
-            if let Some(message) = &validity_report.message {
-                println!("  Message: {}", message);
-            }
-        }
-        Err(e) => {
-            eprintln!("✗ Failed to send configuration validity report: {}", e);
-            println!("  Note: This requires an active deployment validation request");
-        }
-    }
-
-    println!();
-
-    // =============================================
-    // Complex Configuration Update with Timestamp
-    // =============================================
-    println!("6. Updating complex configuration with timestamp...");
-    println!("{:-<60}", "");
-
-    // Get a fresh timestamp for the complex update
-    let fresh_timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_millis() as u64;
-
-    let complex_value = serde_json::json!({
-        "enabled": true,
-        "timeout": 30,
-        "retries": 3,
-        "updated_at": fresh_timestamp
-    });
-
-    let complex_update_request = UpdateConfigurationRequest {
-        key_path: vec!["settings".to_string()],
-        value_to_merge: complex_value.clone(),
-        timestamp: fresh_timestamp,
-    };
-
-    match client.update_configuration(complex_update_request).await {
-        Ok(_) => {
-            println!("✓ Complex configuration updated successfully:");
-            println!("  Key: settings");
-            println!("  Timestamp: {}", fresh_timestamp);
-            println!(
-                "  New Value: {}",
-                serde_json::to_string_pretty(&complex_value)
-                    .unwrap_or_else(|_| { "Failed to format value".to_string() })
-            );
-        }
-        Err(e) => {
-            eprintln!("✗ Failed to update complex configuration: {}", e);
-            println!("  Note: Updates may require deployment context or special permissions");
-        }
-    }
-
-    println!();
     println!("{:-<60}", "");
     println!("Configuration operations demonstration completed!");
     println!();
@@ -254,8 +174,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ✓ Updated test configuration key with timestamp");
     println!("  ✓ Verified the configuration update");
     println!("  ✓ Attempted to get another component's configuration");
-    println!("  ✓ Sent configuration validity report");
-    println!("  ✓ Updated complex configuration with fresh timestamp");
     println!();
     println!("Key features demonstrated:");
     println!("  • Optional componentName in GetConfiguration");

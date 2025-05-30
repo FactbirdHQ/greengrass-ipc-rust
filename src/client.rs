@@ -172,22 +172,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("PublishToTopic failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("PublishToTopic failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -326,26 +313,13 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("SubscribeToTopic failed: {}", error_msg);
-                let _ = self
-                    .connection
-                    .unregister_stream_handler(&operation_id)
-                    .await;
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("SubscribeToTopic failed: {}", error);
+            let _ = self
+                .connection
+                .unregister_stream_handler(&operation_id)
+                .await;
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -443,22 +417,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("PublishToIoTCore failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("PublishToIoTCore failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -610,22 +571,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("GetLocalDeploymentStatus failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("GetLocalDeploymentStatus failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -704,22 +652,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("ListLocalDeployments failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("ListLocalDeployments failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -803,22 +738,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("GetComponentDetails failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("GetComponentDetails failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -894,22 +816,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("ListComponents failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("ListComponents failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -989,22 +898,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("RestartComponent failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("RestartComponent failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1084,22 +980,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("StopComponent failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("StopComponent failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1179,22 +1062,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("PauseComponent failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("PauseComponent failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1274,22 +1144,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("ResumeComponent failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("ResumeComponent failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1378,22 +1235,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("GetConfiguration failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("GetConfiguration failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1472,22 +1316,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("UpdateConfiguration failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("UpdateConfiguration failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1566,22 +1397,9 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("SendConfigurationValidityReport failed: {}", error_msg);
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("SendConfigurationValidityReport failed: {}", error);
+            return Err(error);
         }
 
         // Deserialize the response as success
@@ -1816,26 +1634,13 @@ impl GreengrassCoreIPCClient {
             };
 
         // Check if this is an error response
-        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
-            if let Some(error_code) = error_response.get("_errorCode") {
-                let error_msg = format!(
-                    "Greengrass service error: {} - {}",
-                    error_code,
-                    error_response
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("No error message")
-                );
-                log::error!("SubscribeToIoTCore failed: {}", error_msg);
-                let _ = self
-                    .connection
-                    .unregister_stream_handler(&operation_id)
-                    .await;
-                return Err(Error::ServiceError(
-                    error_code.as_str().unwrap_or("Unknown").to_string(),
-                    error_msg,
-                ));
-            }
+        if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
+            log::error!("SubscribeToIoTCore failed: {}", error);
+            let _ = self
+                .connection
+                .unregister_stream_handler(&operation_id)
+                .await;
+            return Err(error);
         }
 
         // Deserialize the response as success

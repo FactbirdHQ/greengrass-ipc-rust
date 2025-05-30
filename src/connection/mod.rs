@@ -800,18 +800,15 @@ impl Connection {
         };
 
         // Find the appropriate handler
-        let error = Error::ServiceError(
-            message
-                .get_header(":error-type")
-                .and_then(Header::string_value)
-                .unwrap_or("Unknown".to_string())
-                .to_string(),
-            message
-                .get_header(":error-message")
-                .and_then(Header::string_value)
-                .unwrap_or("No error message".to_string())
-                .to_string(),
-        );
+        let error_type = message
+            .get_header(":error-type")
+            .and_then(Header::string_value)
+            .unwrap_or("Unknown".to_string());
+        let error_message = message
+            .get_header(":error-message")
+            .and_then(Header::string_value)
+            .unwrap_or("No error message".to_string());
+        let error = Error::ServiceError(format!("{}: {}", error_type, error_message));
 
         let handlers = self.response_handlers.read().await;
         if let Some(handler) = handlers.get(&operation_id) {
