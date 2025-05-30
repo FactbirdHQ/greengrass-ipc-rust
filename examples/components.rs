@@ -4,7 +4,10 @@
 //! information about all installed components.
 
 use greengrass_ipc_rust::{
-    model::{ComponentState, GetComponentDetailsRequest},
+    model::{
+        ComponentState, GetComponentDetailsRequest, PauseComponentRequest, RequestStatus,
+        RestartComponentRequest, ResumeComponentRequest, StopComponentRequest,
+    },
     GreengrassCoreIPCClient,
 };
 
@@ -38,9 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("  State: {}", format_state(component.state));
 
                         if let Some(config) = &component.configuration {
-                            println!("  Configuration: {}", 
-                                serde_json::to_string_pretty(config)
-                                    .unwrap_or_else(|_| "Failed to format configuration".to_string())
+                            println!(
+                                "  Configuration: {}",
+                                serde_json::to_string_pretty(config).unwrap_or_else(|_| {
+                                    "Failed to format configuration".to_string()
+                                })
                             );
                         }
 
@@ -52,7 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Demonstrate get_component_details for multiple components
                     if let Some(first_component) = components.first() {
                         println!("\n{:-<80}", "");
-                        println!("\nGetting detailed information for '{}'...\n", first_component.component_name);
+                        println!(
+                            "\nGetting detailed information for '{}'...\n",
+                            first_component.component_name
+                        );
 
                         let details_request = GetComponentDetailsRequest {
                             component_name: first_component.component_name.clone(),
@@ -67,9 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  State: {}", format_state(details.state));
 
                                 if let Some(config) = &details.configuration {
-                                    println!("  Configuration: {}", 
-                                        serde_json::to_string_pretty(config)
-                                            .unwrap_or_else(|_| "Failed to format configuration".to_string())
+                                    println!(
+                                        "  Configuration: {}",
+                                        serde_json::to_string_pretty(config).unwrap_or_else(|_| {
+                                            "Failed to format configuration".to_string()
+                                        })
                                     );
                                 } else {
                                     println!("  Configuration: None");
@@ -82,9 +92,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // Test with a component that has null configuration
-                    if let Some(service_component) = components.iter().find(|c| c.component_name == "UpdateSystemPolicyService") {
+                    if let Some(service_component) = components
+                        .iter()
+                        .find(|c| c.component_name == "UpdateSystemPolicyService")
+                    {
                         println!("\n{:-<80}", "");
-                        println!("\nGetting detailed information for '{}'...\n", service_component.component_name);
+                        println!(
+                            "\nGetting detailed information for '{}'...\n",
+                            service_component.component_name
+                        );
 
                         let details_request = GetComponentDetailsRequest {
                             component_name: service_component.component_name.clone(),
@@ -99,9 +115,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  State: {}", format_state(details.state));
 
                                 if let Some(config) = &details.configuration {
-                                    println!("  Configuration: {}", 
-                                        serde_json::to_string_pretty(config)
-                                            .unwrap_or_else(|_| "Failed to format configuration".to_string())
+                                    println!(
+                                        "  Configuration: {}",
+                                        serde_json::to_string_pretty(config).unwrap_or_else(|_| {
+                                            "Failed to format configuration".to_string()
+                                        })
                                     );
                                 } else {
                                     println!("  Configuration: None");
@@ -110,6 +128,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(e) => {
                                 eprintln!("Failed to get component details: {}", e);
                             }
+                        }
+                    }
+
+                    if let Some(test_component) = components
+                        .iter()
+                        .find(|c| c.component_name == "aws.greengrass.LocalDebugConsole")
+                    {
+                        println!("\n{:-<80}", "");
+                        println!(
+                            "\nTesting lifecycle operations on {}...",
+                            test_component.component_name
+                        );
+
+                        // Test pause
+                        let pause_request = PauseComponentRequest {
+                            component_name: test_component.component_name.clone(),
+                        };
+
+                        match client.pause_component(pause_request).await {
+                            Ok(response) => {
+                                println!("Pause component result:");
+                                println!(
+                                    "  Status: {}",
+                                    format_request_status(response.pause_status)
+                                );
+                                if let Some(msg) = response.message {
+                                    println!("  Message: {}", msg);
+                                }
+                            }
+                            Err(e) => eprintln!("Failed to pause component: {}", e),
+                        }
+
+                        // Wait a moment
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                        // Test resume
+                        let resume_request = ResumeComponentRequest {
+                            component_name: test_component.component_name.clone(),
+                        };
+
+                        match client.resume_component(resume_request).await {
+                            Ok(response) => {
+                                println!("Resume component result:");
+                                println!(
+                                    "  Status: {}",
+                                    format_request_status(response.resume_status)
+                                );
+                                if let Some(msg) = response.message {
+                                    println!("  Message: {}", msg);
+                                }
+                            }
+                            Err(e) => eprintln!("Failed to resume component: {}", e),
                         }
                     }
                 }
@@ -141,5 +211,12 @@ fn format_state(state: ComponentState) -> &'static str {
         ComponentState::Errored => "ERRORED",
         ComponentState::Broken => "BROKEN",
         ComponentState::Finished => "FINISHED",
+    }
+}
+
+fn format_request_status(status: RequestStatus) -> &'static str {
+    match status {
+        RequestStatus::Succeeded => "SUCCEEDED",
+        RequestStatus::Failed => "FAILED",
     }
 }

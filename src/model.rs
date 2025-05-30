@@ -455,6 +455,98 @@ pub struct GetComponentDetailsResponse {
     pub component_details: ComponentDetails,
 }
 
+/// Request to restart a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestartComponentRequest {
+    /// The name of the component to restart
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Response to restart component request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestartComponentResponse {
+    /// The restart status
+    #[serde(rename = "restartStatus")]
+    pub restart_status: RequestStatus,
+
+    /// Optional message describing the restart result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Request to stop a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopComponentRequest {
+    /// The name of the component to stop
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Response to stop component request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopComponentResponse {
+    /// The stop status
+    #[serde(rename = "stopStatus")]
+    pub stop_status: RequestStatus,
+
+    /// Optional message describing the stop result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Request to pause a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PauseComponentRequest {
+    /// The name of the component to pause
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Response to pause component request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PauseComponentResponse {
+    /// The pause status
+    #[serde(rename = "pauseStatus")]
+    pub pause_status: RequestStatus,
+
+    /// Optional message describing the pause result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Request to resume a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeComponentRequest {
+    /// The name of the component to resume
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+}
+
+/// Response to resume component request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeComponentResponse {
+    /// The resume status
+    #[serde(rename = "resumeStatus")]
+    pub resume_status: RequestStatus,
+
+    /// Optional message describing the resume result
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Status of a lifecycle operation request
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestStatus {
+    /// The request succeeded
+    #[serde(rename = "SUCCEEDED")]
+    Succeeded,
+
+    /// The request failed
+    #[serde(rename = "FAILED")]
+    Failed,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

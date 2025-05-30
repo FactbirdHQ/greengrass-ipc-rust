@@ -19,10 +19,12 @@ use crate::model::{
     BinaryMessage, GetComponentDetailsRequest, GetComponentDetailsResponse, 
     GetLocalDeploymentStatusRequest, GetLocalDeploymentStatusResponse,
     IoTCoreMessage, ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
-    ListLocalDeploymentsResponse, Message, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
-    PublishToTopicRequest, PublishToTopicResponse, SubscribeToIoTCoreRequest, 
-    SubscribeToIoTCoreResponse, SubscribeToTopicRequest, SubscribeToTopicResponse, 
-    SubscriptionResponseMessage,
+    ListLocalDeploymentsResponse, Message, PauseComponentRequest, PauseComponentResponse,
+    PublishToIoTCoreRequest, PublishToIoTCoreResponse, PublishToTopicRequest,
+    PublishToTopicResponse, RestartComponentRequest, RestartComponentResponse,
+    ResumeComponentRequest, ResumeComponentResponse, StopComponentRequest, StopComponentResponse,
+    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, SubscribeToTopicRequest, 
+    SubscribeToTopicResponse, SubscriptionResponseMessage,
 };
 
 /// Default timeout for operations in seconds
@@ -922,37 +924,377 @@ impl GreengrassCoreIPCClient {
     /// Restart a component with the given name
     pub async fn restart_component(
         &self,
-        _request: (), // TODO: Replace with RestartComponentRequest
-    ) -> Result<()> {
-        // TODO: Replace with RestartComponentResponse
-        todo!("Implement restart_component")
+        request: RestartComponentRequest,
+    ) -> Result<RestartComponentResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#RestartComponent".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#RestartComponentRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending RestartComponent operation on stream {} for component '{}'",
+            stream_id, request.component_name
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("RestartComponent failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: RestartComponentResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Stop a component with the given name
     pub async fn stop_component(
         &self,
-        _request: (), // TODO: Replace with StopComponentRequest
-    ) -> Result<()> {
-        // TODO: Replace with StopComponentResponse
-        todo!("Implement stop_component")
+        request: StopComponentRequest,
+    ) -> Result<StopComponentResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#StopComponent".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#StopComponentRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending StopComponent operation on stream {} for component '{}'",
+            stream_id, request.component_name
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("StopComponent failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: StopComponentResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Pause a running component
     pub async fn pause_component(
         &self,
-        _request: (), // TODO: Replace with PauseComponentRequest
-    ) -> Result<()> {
-        // TODO: Replace with PauseComponentResponse
-        todo!("Implement pause_component")
+        request: PauseComponentRequest,
+    ) -> Result<PauseComponentResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#PauseComponent".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#PauseComponentRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending PauseComponent operation on stream {} for component '{}'",
+            stream_id, request.component_name
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("PauseComponent failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: PauseComponentResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Resume a paused component
     pub async fn resume_component(
         &self,
-        _request: (), // TODO: Replace with ResumeComponentRequest
-    ) -> Result<()> {
-        // TODO: Replace with ResumeComponentResponse
-        todo!("Implement resume_component")
+        request: ResumeComponentRequest,
+    ) -> Result<ResumeComponentResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#ResumeComponent".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#ResumeComponentRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending ResumeComponent operation on stream {} for component '{}'",
+            stream_id, request.component_name
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("ResumeComponent failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: ResumeComponentResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Defer the update of components by a given amount of time

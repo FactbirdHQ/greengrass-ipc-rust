@@ -23,7 +23,9 @@ pub use model::{
     GetComponentDetailsRequest, GetComponentDetailsResponse, IoTCoreMessage, JsonMessage, 
     ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
     ListLocalDeploymentsResponse, LocalDeployment, Message, MessageContext, MqttMessage, 
-    PublishToIoTCoreRequest, PublishToIoTCoreResponse, QoS, SubscribeToIoTCoreRequest, 
+    PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
+    QoS, RequestStatus, RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest, 
+    ResumeComponentResponse, StopComponentRequest, StopComponentResponse, SubscribeToIoTCoreRequest, 
     SubscribeToIoTCoreResponse, SubscriptionResponseMessage,
 };
 
