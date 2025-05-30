@@ -285,6 +285,77 @@ pub struct UserProperty {
     pub value: String,
 }
 
+/// Request to list local deployments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListLocalDeploymentsRequest {}
+
+/// Response to list local deployments request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListLocalDeploymentsResponse {
+    /// List of local deployments
+    #[serde(rename = "localDeployments", skip_serializing_if = "Option::is_none")]
+    pub local_deployments: Option<Vec<LocalDeployment>>,
+}
+
+/// Information about a local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalDeployment {
+    /// The ID of the deployment
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+
+    /// The status of the deployment
+    pub status: DeploymentStatus,
+
+    /// The timestamp when the deployment was created
+    #[serde(rename = "createdOn", skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
+
+    /// The components in the deployment and their details
+    #[serde(rename = "deploymentStatusDetails", skip_serializing_if = "Option::is_none")]
+    pub deployment_status_details: Option<DeploymentStatusDetails>,
+}
+
+/// The status of a deployment
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeploymentStatus {
+    /// The deployment is in progress
+    #[serde(rename = "IN_PROGRESS")]
+    InProgress,
+
+    /// The deployment is queued
+    #[serde(rename = "QUEUED")]
+    Queued,
+
+    /// The deployment failed
+    #[serde(rename = "FAILED")]
+    Failed,
+
+    /// The deployment succeeded
+    #[serde(rename = "SUCCEEDED")]
+    Succeeded,
+}
+
+/// Detailed information about the deployment status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploymentStatusDetails {
+    /// Detailed deployment status as a string
+    #[serde(rename = "detailedDeploymentStatus", skip_serializing_if = "Option::is_none")]
+    pub detailed_deployment_status: Option<String>,
+
+    /// List of deployment error stacks
+    #[serde(rename = "deploymentErrorStack", skip_serializing_if = "Option::is_none")]
+    pub deployment_error_stack: Option<Vec<String>>,
+
+    /// List of deployment error types
+    #[serde(rename = "deploymentErrorTypes", skip_serializing_if = "Option::is_none")]
+    pub deployment_error_types: Option<Vec<String>>,
+
+    /// The reason for the current deployment status
+    #[serde(rename = "deploymentFailureCause", skip_serializing_if = "Option::is_none")]
+    pub deployment_failure_cause: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

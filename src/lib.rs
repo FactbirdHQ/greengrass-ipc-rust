@@ -10,7 +10,7 @@ mod connection;
 mod error;
 pub mod event_stream;
 mod lifecycle;
-mod model;
+pub mod model;
 mod operation;
 
 use std::time::Duration;
@@ -21,7 +21,8 @@ pub use lifecycle::LifecycleHandler;
 pub use model::{
     BinaryMessage, JsonMessage, Message, MessageContext, PublishToIoTCoreRequest,
     PublishToIoTCoreResponse, QoS, SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse,
-    SubscriptionResponseMessage, IoTCoreMessage, MqttMessage,
+    SubscriptionResponseMessage, IoTCoreMessage, MqttMessage, ListLocalDeploymentsRequest,
+    ListLocalDeploymentsResponse, LocalDeployment, DeploymentStatus, DeploymentStatusDetails,
 };
 
 /// Connect to the Greengrass Core IPC service with default parameters.
