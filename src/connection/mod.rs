@@ -30,18 +30,6 @@ pub const ENV_AUTH_TOKEN: &str = "SVCUID";
 /// Default timeout for connection operations in seconds
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Version header name
-pub const VERSION_HEADER: &str = ":version";
-
-/// Content type header name
-pub const CONTENT_TYPE_HEADER: &str = ":content-type";
-
-/// Content type for application JSON
-pub const CONTENT_TYPE_APPLICATION_JSON: &str = "application/json";
-
-/// Service model type header
-pub const SERVICE_MODEL_TYPE_HEADER: &str = "service-model-type";
-
 /// Current SDK version
 pub const VERSION_STRING: &str = "0.1.0";
 
@@ -282,8 +270,6 @@ impl Connection {
         }
     }
 
-    // Handle connection failure is no longer needed - error handling is done directly in connect_internal
-
     /// Get the socket path used for this connection
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
@@ -310,7 +296,6 @@ impl Connection {
         }
     }
 
-    /// Close the connection
     /// Close the connection
     pub async fn close(&self, reason: Option<Error>) -> Result<()> {
         let state = *self.state.read().await;

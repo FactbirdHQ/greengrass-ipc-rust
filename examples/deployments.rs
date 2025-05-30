@@ -4,7 +4,10 @@
 //! information about the last 5 local deployments.
 //! ```
 
-use greengrass_ipc_rust::{model::DeploymentStatus, GreengrassCoreIPCClient};
+use greengrass_ipc_rust::{
+    model::{DeploymentStatus, GetLocalDeploymentStatusRequest},
+    GreengrassCoreIPCClient,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +71,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if idx < deployments.len() - 1 {
                             println!("{:-<80}", "");
+                        }
+                    }
+
+                    // Get detailed status for the first deployment
+                    if let Some(first_deployment) = deployments.first() {
+                        println!("\n{:-<80}", "");
+                        println!("\nGetting detailed status for the first deployment...\n");
+
+                        let status_request = GetLocalDeploymentStatusRequest {
+                            deployment_id: first_deployment.deployment_id.clone(),
+                        };
+
+                        match client.get_local_deployment_status(status_request).await {
+                            Ok(status_response) => {
+                                println!("Detailed deployment status retrieved successfully:");
+                                println!("  ID: {}", status_response.deployment.deployment_id);
+                                println!(
+                                    "  Status: {}",
+                                    format_status(status_response.deployment.status)
+                                );
+
+                                if let Some(created_on) = &status_response.deployment.created_on {
+                                    println!("  Created: {}", created_on);
+                                }
+
+                                if let Some(details) =
+                                    &status_response.deployment.deployment_status_details
+                                {
+                                    if let Some(detailed_status) =
+                                        &details.detailed_deployment_status
+                                    {
+                                        println!("  Detailed Status: {}", detailed_status);
+                                    }
+
+                                    if let Some(failure_cause) = &details.deployment_failure_cause {
+                                        println!("  Failure Cause: {}", failure_cause);
+                                    }
+
+                                    if let Some(error_stack) = &details.deployment_error_stack {
+                                        if !error_stack.is_empty() {
+                                            println!("  Error Stack:");
+                                            for error in error_stack {
+                                                println!("    - {}", error);
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(error_types) = &details.deployment_error_types {
+                                        if !error_types.is_empty() {
+                                            println!("  Error Types:");
+                                            for error_type in error_types {
+                                                println!("    - {}", error_type);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to get deployment status: {}", e);
+                            }
                         }
                     }
                 }

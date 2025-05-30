@@ -16,10 +16,12 @@ use crate::error::{Error, Result};
 use crate::event_stream::Header;
 use crate::lifecycle::LifecycleHandler;
 use crate::model::{
-    BinaryMessage, IoTCoreMessage, ListLocalDeploymentsRequest, ListLocalDeploymentsResponse,
-    Message, PublishToIoTCoreRequest, PublishToIoTCoreResponse, PublishToTopicRequest,
-    PublishToTopicResponse, SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse,
-    SubscribeToTopicRequest, SubscribeToTopicResponse, SubscriptionResponseMessage,
+    BinaryMessage, GetLocalDeploymentStatusRequest, GetLocalDeploymentStatusResponse,
+    IoTCoreMessage, ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
+    ListLocalDeploymentsResponse, Message, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
+    PublishToTopicRequest, PublishToTopicResponse, SubscribeToIoTCoreRequest, 
+    SubscribeToIoTCoreResponse, SubscribeToTopicRequest, SubscribeToTopicResponse, 
+    SubscriptionResponseMessage,
 };
 
 /// Default timeout for operations in seconds
@@ -112,16 +114,14 @@ impl GreengrassCoreIPCClient {
         // Create the event stream message following AWS Event Stream RPC protocol
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(crate::event_stream::Header::StreamId(stream_id))
-            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType(
-                "application/json".to_string(),
-            ))
-            .with_header(crate::event_stream::Header::Operation(
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
                 "aws.greengrass#PublishToTopic".to_string(),
             ))
-            .with_header(crate::event_stream::Header::ServiceModelType(
+            .with_header(Header::ServiceModelType(
                 "aws.greengrass#PublishToTopicRequest".to_string(),
             ))
             .with_payload(request_json.as_bytes().to_vec());
@@ -239,21 +239,17 @@ impl GreengrassCoreIPCClient {
         // Create subscription message
         let mut subscribe_message = crate::event_stream::EventStreamMessage::new();
         subscribe_message = subscribe_message
-            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(crate::event_stream::Header::StreamId(stream_id))
-            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType(
-                "application/json".to_string(),
-            ))
-            .with_header(crate::event_stream::Header::Operation(
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
                 "aws.greengrass#SubscribeToTopic".to_string(),
             ))
-            .with_header(crate::event_stream::Header::ServiceModelType(
+            .with_header(Header::ServiceModelType(
                 "aws.greengrass#SubscribeToTopicRequest".to_string(),
             ))
-            .with_header(crate::event_stream::Header::OperationId(
-                operation_id.clone(),
-            ))
+            .with_header(Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
@@ -389,16 +385,14 @@ impl GreengrassCoreIPCClient {
         // Create the event stream message following AWS Event Stream RPC protocol
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(crate::event_stream::Header::StreamId(stream_id))
-            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType(
-                "application/json".to_string(),
-            ))
-            .with_header(crate::event_stream::Header::Operation(
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
                 "aws.greengrass#PublishToIoTCore".to_string(),
             ))
-            .with_header(crate::event_stream::Header::ServiceModelType(
+            .with_header(Header::ServiceModelType(
                 "aws.greengrass#PublishToIoTCoreRequest".to_string(),
             ))
             .with_payload(request_json.as_bytes().to_vec());
@@ -540,13 +534,102 @@ impl GreengrassCoreIPCClient {
         todo!("Implement cancel_local_deployment")
     }
 
-    /// Get status of a local deployment with the given deployment ID
+    /// Get the status of a local deployment with the given deployment ID
+    ///
+    /// This operation retrieves detailed information about a specific deployment,
+    /// including its current status, creation timestamp, and any error details
+    /// if the deployment failed.
     pub async fn get_local_deployment_status(
         &self,
-        _request: (), // TODO: Replace with GetLocalDeploymentStatusRequest
-    ) -> Result<()> {
-        // TODO: Replace with GetLocalDeploymentStatusResponse
-        todo!("Implement get_local_deployment_status")
+        request: GetLocalDeploymentStatusRequest,
+    ) -> Result<GetLocalDeploymentStatusResponse> {
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#GetLocalDeploymentStatus".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#GetLocalDeploymentStatusRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending GetLocalDeploymentStatus operation on stream {}",
+            stream_id
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("GetLocalDeploymentStatus failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: GetLocalDeploymentStatusResponse = serde_json::from_str(&response_json)
+            .map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// List the last 5 local deployments along with their statuses
@@ -572,22 +655,23 @@ impl GreengrassCoreIPCClient {
         // Create the event stream message
         let mut event_message = crate::event_stream::EventStreamMessage::new();
         event_message = event_message
-            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(crate::event_stream::Header::StreamId(stream_id))
-            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType(
-                "application/json".to_string(),
-            ))
-            .with_header(crate::event_stream::Header::Operation(
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
                 "aws.greengrass#ListLocalDeployments".to_string(),
             ))
-            .with_header(crate::event_stream::Header::ServiceModelType(
+            .with_header(Header::ServiceModelType(
                 "aws.greengrass#ListLocalDeploymentsRequest".to_string(),
             ))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection
-        log::debug!("Sending ListLocalDeployments operation on stream {}", stream_id);
+        log::debug!(
+            "Sending ListLocalDeployments operation on stream {}",
+            stream_id
+        );
         self.connection.send_message(&event_message).await?;
 
         log::debug!("Waiting for response on stream {}...", stream_id);
@@ -656,12 +740,97 @@ impl GreengrassCoreIPCClient {
     }
 
     /// Request for a list of components
-    pub async fn list_components(
-        &self,
-        _request: (), // TODO: Replace with ListComponentsRequest
-    ) -> Result<()> {
-        // TODO: Replace with ListComponentsResponse
-        todo!("Implement list_components")
+    pub async fn list_components(&self) -> Result<ListComponentsResponse> {
+        // Create the request
+        let request = ListComponentsRequest {};
+
+        // Create a unique stream ID for this operation
+        let stream_id = self.connection.allocate_stream_id().await?;
+
+        // Create a oneshot channel for the response
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+
+        // Register the response handler for this stream
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        // Serialize the request to JSON
+        let request_json = serde_json::to_string(&request)
+            .map_err(|e| Error::SerializationError(e.to_string()))?;
+
+        // Create the event stream message
+        let mut event_message = crate::event_stream::EventStreamMessage::new();
+        event_message = event_message
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
+                "aws.greengrass#ListComponents".to_string(),
+            ))
+            .with_header(Header::ServiceModelType(
+                "aws.greengrass#ListComponentsRequest".to_string(),
+            ))
+            .with_payload(request_json.as_bytes().to_vec());
+
+        // Send the message over the connection
+        log::debug!(
+            "Sending ListComponents operation on stream {}",
+            stream_id
+        );
+        self.connection.send_message(&event_message).await?;
+
+        log::debug!("Waiting for response on stream {}...", stream_id);
+        // Wait for the response with timeout
+        let response_json =
+            match tokio::time::timeout(self.operation_timeout, response_receiver).await {
+                Ok(Ok(Ok(json_str))) => {
+                    log::debug!("Received response for stream {}: {}", stream_id, json_str);
+                    json_str
+                }
+                Ok(Ok(Err(e))) => {
+                    log::error!("Error response for stream {}: {}", stream_id, e);
+                    return Err(e);
+                }
+                Ok(Err(_)) => {
+                    log::error!("Response channel closed for stream {}", stream_id);
+                    return Err(Error::ConnectionClosed(
+                        "Response channel closed".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    log::error!("Timeout waiting for response on stream {}", stream_id);
+                    return Err(Error::OperationTimeout);
+                }
+            };
+
+        // Check if this is an error response
+        if let Ok(error_response) = serde_json::from_str::<serde_json::Value>(&response_json) {
+            if let Some(error_code) = error_response.get("_errorCode") {
+                let error_msg = format!(
+                    "Greengrass service error: {} - {}",
+                    error_code,
+                    error_response
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("No error message")
+                );
+                log::error!("ListComponents failed: {}", error_msg);
+                return Err(Error::ServiceError(
+                    error_code.as_str().unwrap_or("Unknown").to_string(),
+                    error_msg,
+                ));
+            }
+        }
+
+        // Deserialize the response as success
+        let response: ListComponentsResponse =
+            serde_json::from_str(&response_json).map_err(|e| {
+                Error::SerializationError(format!("Failed to deserialize response: {}", e))
+            })?;
+
+        Ok(response)
     }
 
     /// Restart a component with the given name
@@ -903,21 +1072,17 @@ impl GreengrassCoreIPCClient {
         // Create subscription message
         let mut subscribe_message = crate::event_stream::EventStreamMessage::new();
         subscribe_message = subscribe_message
-            .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(crate::event_stream::Header::StreamId(stream_id))
-            .with_header(crate::event_stream::Header::MessageFlags(0)) // No flags
-            .with_header(crate::event_stream::Header::ContentType(
-                "application/json".to_string(),
-            ))
-            .with_header(crate::event_stream::Header::Operation(
+            .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            .with_header(Header::StreamId(stream_id))
+            .with_header(Header::MessageFlags(0)) // No flags
+            .with_header(Header::ContentType("application/json".to_string()))
+            .with_header(Header::Operation(
                 "aws.greengrass#SubscribeToIoTCore".to_string(),
             ))
-            .with_header(crate::event_stream::Header::ServiceModelType(
+            .with_header(Header::ServiceModelType(
                 "aws.greengrass#SubscribeToIoTCoreRequest".to_string(),
             ))
-            .with_header(crate::event_stream::Header::OperationId(
-                operation_id.clone(),
-            ))
+            .with_header(Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
         // Send the message over the connection

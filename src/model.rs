@@ -356,6 +356,89 @@ pub struct DeploymentStatusDetails {
     pub deployment_failure_cause: Option<String>,
 }
 
+/// Request to get the status of a local deployment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetLocalDeploymentStatusRequest {
+    /// The ID of the deployment to get the status for
+    #[serde(rename = "deploymentId")]
+    pub deployment_id: String,
+}
+
+/// Response to get local deployment status request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetLocalDeploymentStatusResponse {
+    /// The deployment information
+    pub deployment: LocalDeployment,
+}
+
+/// Request to list components
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListComponentsRequest {}
+
+/// Response to list components request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListComponentsResponse {
+    /// List of components
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<ComponentDetails>>,
+}
+
+/// Information about a component
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentDetails {
+    /// The name of the component
+    #[serde(rename = "componentName")]
+    pub component_name: String,
+
+    /// The version of the component
+    #[serde(rename = "version")]
+    pub version: String,
+
+    /// The state of the component
+    #[serde(rename = "state")]
+    pub state: ComponentState,
+
+    /// Configuration for the component
+    #[serde(rename = "configuration", skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<serde_json::Value>,
+}
+
+/// The state of a component
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComponentState {
+    /// The component is new
+    #[serde(rename = "NEW")]
+    New,
+
+    /// The component is installed
+    #[serde(rename = "INSTALLED")]
+    Installed,
+
+    /// The component is starting
+    #[serde(rename = "STARTING")]
+    Starting,
+
+    /// The component is running
+    #[serde(rename = "RUNNING")]
+    Running,
+
+    /// The component is stopping
+    #[serde(rename = "STOPPING")]
+    Stopping,
+
+    /// The component is errored
+    #[serde(rename = "ERRORED")]
+    Errored,
+
+    /// The component is broken
+    #[serde(rename = "BROKEN")]
+    Broken,
+
+    /// The component is finished
+    #[serde(rename = "FINISHED")]
+    Finished,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
