@@ -11,29 +11,28 @@ mod error;
 pub mod event_stream;
 mod lifecycle;
 pub mod model;
-// mod operation;
 
 use std::time::Duration;
 
-pub use client::{GreengrassCoreIPCClient, IoTCoreSubscription, Subscription};
+pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
 pub use model::{
-    BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent, 
-    ConfigurationValidityReport, ConfigurationValidityStatus, DeploymentStatus, 
+    BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent,
+    ConfigurationValidityReport, ConfigurationValidityStatus, DeploymentStatus,
     DeploymentStatusDetails, GetComponentDetailsRequest, GetComponentDetailsResponse,
-    GetConfigurationRequest, GetConfigurationResponse, IoTCoreMessage, JsonMessage, 
-    ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest, 
-    ListLocalDeploymentsResponse, LocalDeployment, Message, MessageContext, MqttMessage, 
-    PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest, PublishToIoTCoreResponse, 
-    QoS, RequestStatus, RestartComponentRequest, RestartComponentResponse, ResumeComponentRequest, 
-    ResumeComponentResponse, SendConfigurationValidityReportRequest, 
-    SendConfigurationValidityReportResponse, StopComponentRequest, StopComponentResponse, 
-    SubscribeToConfigurationUpdateRequest, SubscribeToConfigurationUpdateResponse,
-    SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse, 
-    SubscribeToValidateConfigurationUpdatesRequest, SubscribeToValidateConfigurationUpdatesResponse,
-    SubscriptionResponseMessage, UpdateConfigurationRequest, UpdateConfigurationResponse,
-    ValidateConfigurationUpdateEvent,
+    GetConfigurationRequest, GetConfigurationResponse, IoTCoreMessage, JsonMessage,
+    ListComponentsRequest, ListComponentsResponse, ListLocalDeploymentsRequest,
+    ListLocalDeploymentsResponse, LocalDeployment, Message, MessageContext, MqttMessage,
+    PauseComponentRequest, PauseComponentResponse, PublishToIoTCoreRequest,
+    PublishToIoTCoreResponse, QoS, RequestStatus, RestartComponentRequest,
+    RestartComponentResponse, ResumeComponentRequest, ResumeComponentResponse,
+    SendConfigurationValidityReportRequest, SendConfigurationValidityReportResponse,
+    StopComponentRequest, StopComponentResponse, SubscribeToConfigurationUpdateRequest,
+    SubscribeToConfigurationUpdateResponse, SubscribeToIoTCoreRequest, SubscribeToIoTCoreResponse,
+    SubscribeToValidateConfigurationUpdatesRequest,
+    SubscribeToValidateConfigurationUpdatesResponse, SubscriptionResponseMessage,
+    UpdateConfigurationRequest, UpdateConfigurationResponse, ValidateConfigurationUpdateEvent,
 };
 
 /// Connect to the Greengrass Core IPC service with default parameters.
