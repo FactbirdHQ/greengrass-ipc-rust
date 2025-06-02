@@ -6,7 +6,7 @@
 use greengrass_ipc_rust::{
     model::{
         ComponentState, GetComponentDetailsRequest, PauseComponentRequest, RequestStatus,
-        RestartComponentRequest, ResumeComponentRequest, StopComponentRequest,
+        ResumeComponentRequest,
     },
     GreengrassCoreIPCClient,
 };

@@ -59,9 +59,11 @@
 mod client;
 mod document;
 mod error;
+mod manager;
 mod persistence;
 mod topics;
 
 pub use client::ShadowClient;
 pub use document::{ShadowDocument, ShadowState, ShadowUpdateRequest, ShadowUpdateState};
 pub use error::ShadowError;
+pub use manager::ShadowManager;

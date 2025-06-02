@@ -5,10 +5,7 @@
 //! component's own configuration values.
 
 use greengrass_ipc_rust::{
-    model::{
-        ConfigurationValidityReport, ConfigurationValidityStatus, GetConfigurationRequest,
-        SendConfigurationValidityReportRequest, UpdateConfigurationRequest,
-    },
+    model::{GetConfigurationRequest, UpdateConfigurationRequest},
     GreengrassCoreIPCClient,
 };
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -5,4 +5,4 @@
 
 pub mod shadow;
 
-pub use shadow::ShadowClient;
+pub use shadow::{ShadowClient, ShadowManager};

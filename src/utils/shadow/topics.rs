@@ -7,6 +7,7 @@
 #[derive(Debug, Clone)]
 pub struct ShadowTopics {
     /// Base topic prefix for this shadow
+    #[allow(dead_code)]
     pub base: String,
 
     // Update operation topics
@@ -65,96 +66,6 @@ impl ShadowTopics {
             base,
         }
     }
-
-    /// Check if a topic is a shadow-related topic for this shadow
-    pub fn is_shadow_topic(&self, topic: &str) -> bool {
-        topic.starts_with(&self.base)
-    }
-
-    /// Determine the operation type from a response topic
-    pub fn parse_response_topic(&self, topic: &str) -> Option<ShadowResponseType> {
-        if topic == self.update_accepted {
-            Some(ShadowResponseType::UpdateAccepted)
-        } else if topic == self.update_rejected {
-            Some(ShadowResponseType::UpdateRejected)
-        } else if topic == self.get_accepted {
-            Some(ShadowResponseType::GetAccepted)
-        } else if topic == self.get_rejected {
-            Some(ShadowResponseType::GetRejected)
-        } else if topic == self.delete_accepted {
-            Some(ShadowResponseType::DeleteAccepted)
-        } else if topic == self.delete_rejected {
-            Some(ShadowResponseType::DeleteRejected)
-        } else if topic == self.delta {
-            Some(ShadowResponseType::Delta)
-        } else {
-            None
-        }
-    }
-}
-
-/// Types of shadow response topics
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShadowResponseType {
-    UpdateAccepted,
-    UpdateRejected,
-    GetAccepted,
-    GetRejected,
-    DeleteAccepted,
-    DeleteRejected,
-    Delta,
-}
-
-impl ShadowResponseType {
-    /// Check if this is an accepted response
-    pub fn is_accepted(&self) -> bool {
-        matches!(
-            self,
-            ShadowResponseType::UpdateAccepted
-                | ShadowResponseType::GetAccepted
-                | ShadowResponseType::DeleteAccepted
-        )
-    }
-
-    /// Check if this is a rejected response
-    pub fn is_rejected(&self) -> bool {
-        matches!(
-            self,
-            ShadowResponseType::UpdateRejected
-                | ShadowResponseType::GetRejected
-                | ShadowResponseType::DeleteRejected
-        )
-    }
-
-    /// Check if this is a delta notification
-    pub fn is_delta(&self) -> bool {
-        matches!(self, ShadowResponseType::Delta)
-    }
-
-    /// Get the operation type (update, get, delete, or delta)
-    pub fn operation(&self) -> ShadowOperation {
-        match self {
-            ShadowResponseType::UpdateAccepted | ShadowResponseType::UpdateRejected => {
-                ShadowOperation::Update
-            }
-            ShadowResponseType::GetAccepted | ShadowResponseType::GetRejected => {
-                ShadowOperation::Get
-            }
-            ShadowResponseType::DeleteAccepted | ShadowResponseType::DeleteRejected => {
-                ShadowOperation::Delete
-            }
-            ShadowResponseType::Delta => ShadowOperation::Delta,
-        }
-    }
-}
-
-/// Shadow operation types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShadowOperation {
-    Update,
-    Get,
-    Delete,
-    Delta,
 }
 
 #[cfg(test)]
@@ -213,52 +124,5 @@ mod tests {
             topics.delta,
             "$aws/things/my-device/shadow/name/config/update/delta"
         );
-    }
-
-    #[test]
-    fn test_topic_parsing() {
-        let topics = ShadowTopics::new_classic("test-device");
-
-        assert_eq!(
-            topics.parse_response_topic(&topics.update_accepted),
-            Some(ShadowResponseType::UpdateAccepted)
-        );
-        assert_eq!(
-            topics.parse_response_topic(&topics.update_rejected),
-            Some(ShadowResponseType::UpdateRejected)
-        );
-        assert_eq!(
-            topics.parse_response_topic(&topics.delta),
-            Some(ShadowResponseType::Delta)
-        );
-        assert_eq!(
-            topics.parse_response_topic("$aws/things/other-device/shadow/update/accepted"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_response_type_methods() {
-        assert!(ShadowResponseType::UpdateAccepted.is_accepted());
-        assert!(!ShadowResponseType::UpdateAccepted.is_rejected());
-        assert!(!ShadowResponseType::UpdateAccepted.is_delta());
-
-        assert!(ShadowResponseType::UpdateRejected.is_rejected());
-        assert!(!ShadowResponseType::UpdateRejected.is_accepted());
-
-        assert!(ShadowResponseType::Delta.is_delta());
-        assert!(!ShadowResponseType::Delta.is_accepted());
-        assert!(!ShadowResponseType::Delta.is_rejected());
-    }
-
-    #[test]
-    fn test_is_shadow_topic() {
-        let topics = ShadowTopics::new_classic("my-device");
-
-        assert!(topics.is_shadow_topic("$aws/things/my-device/shadow/update"));
-        assert!(topics.is_shadow_topic("$aws/things/my-device/shadow/update/accepted"));
-        assert!(topics.is_shadow_topic("$aws/things/my-device/shadow/get/rejected"));
-        assert!(!topics.is_shadow_topic("$aws/things/other-device/shadow/update"));
-        assert!(!topics.is_shadow_topic("some/other/topic"));
     }
 }

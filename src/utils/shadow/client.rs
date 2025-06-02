@@ -384,6 +384,7 @@ where
         let operation = async {
             tokio::select! {
                 message = accepted_stream.next() => {
+                    println!("Raw json payload: {:?}", message);
                     if let Some(msg) = message {
                         let response: ShadowAcceptedResponse<T> = serde_json::from_slice(&msg.message.payload)?;
 
