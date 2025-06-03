@@ -25,7 +25,14 @@ base64 = "0.21"
 dirs = "5.0"
 async-stream = "0.3"
 
+rustot = { git = "ssh://git@github.com/FactbirdHQ/rustot", rev = "505fcdb" }
+
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.8"
 env_logger = "0.11"
+
+[patch."ssh://git@github.com/FactbirdHQ/rustot"]
+rustot = { path = "../rustot" }
+rustot-derive = { path = "../rustot/rustot_derive" }

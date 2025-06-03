@@ -4,5 +4,3 @@
 //! of the core Greengrass IPC functionality.
 
 pub mod shadow;
-
-pub use shadow::{ShadowClient, ShadowManager};

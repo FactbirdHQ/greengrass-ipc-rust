@@ -16,7 +16,6 @@ pub mod utils;
 pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};
 pub use lifecycle::LifecycleHandler;
-pub use utils::{ShadowClient, ShadowManager};
 pub use model::{
     BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent,
     ConfigurationValidityReport, ConfigurationValidityStatus, DeploymentStatus,

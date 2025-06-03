@@ -5,20 +5,21 @@
 
 use crate::model::ListNamedShadowsForThingRequest;
 use crate::utils::shadow::{
-    document::{
-        ShadowAcceptedResponse, ShadowDeltaResponse, ShadowDocument, ShadowRejectedResponse,
-        ShadowState, ShadowUpdateRequest,
-    },
     error::{ShadowError, ShadowResult},
     persistence::FileBasedPersistence,
     topics::ShadowTopics,
+    ShadowState,
 };
 use crate::{
     GreengrassCoreIPCClient, IoTCoreMessage, PublishToIoTCoreRequest, QoS, StreamOperation,
     SubscribeToIoTCoreRequest,
 };
 use futures::stream::StreamExt as _;
-use serde::{Deserialize, Serialize};
+use rustot::shadows::data_types::{
+    AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
+};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ pub struct ShadowManager<T> {
 
 impl<T> ShadowManager<T>
 where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync + 'static,
+    T: ShadowState + Serialize + DeserializeOwned,
 {
     /// Create a new shadow manager
     pub async fn new(
@@ -83,11 +84,9 @@ where
             self.add_shadow(shadow_name.clone()).await?;
         }
 
-        // Note: Wildcard subscriptions are set up when create_delta_stream() is called
-
         // Sync all shadows from cloud
         for shadow_name in &shadow_names {
-            if let Err(e) = self.sync_shadow_from_cloud(shadow_name).await {
+            if let Err(e) = self.get_shadow(shadow_name).await {
                 eprintln!("Warning: Failed to sync shadow '{}': {}", shadow_name, e);
             }
         }
@@ -118,7 +117,7 @@ where
     }
 
     /// Add a new shadow to be managed
-    pub async fn add_shadow(&self, shadow_name: String) -> ShadowResult<()> {
+    async fn add_shadow(&self, shadow_name: String) -> ShadowResult<()> {
         let persistence_path = self
             .persistence_base_dir
             .join(format!("{}.json", shadow_name));
@@ -131,15 +130,8 @@ where
         Ok(())
     }
 
-    /// Remove a shadow from management
-    pub async fn remove_shadow(&self, shadow_name: &str) -> ShadowResult<()> {
-        let mut shadows = self.shadows.write().await;
-        shadows.remove(shadow_name);
-        Ok(())
-    }
-
     /// Wait for the next delta change from any managed shadow
-    pub async fn wait_delta(&self) -> ShadowResult<(String, T)> {
+    pub async fn wait_delta(&self) -> ShadowResult<(String, Option<T::Delta>)> {
         // Subscribe to delta topic with wildcard
         let delta_topic = format!(
             "$aws/things/{}/shadow/name/{}+/update/delta",
@@ -155,9 +147,7 @@ where
 
         // Wait for the next delta message
         while let Some(message) = delta_stream.next().await {
-            if let Ok((shadow_name, delta_state)) = self.parse_delta_message(&message).await {
-                return Ok((shadow_name, delta_state));
-            }
+            return self.parse_delta_message(&message).await;
         }
 
         Err(ShadowError::Timeout)
@@ -183,9 +173,12 @@ where
     }
 
     /// Parse a delta message and extract shadow name and state
-    pub async fn parse_delta_message(&self, message: &IoTCoreMessage) -> ShadowResult<(String, T)> {
-        let topic = &message.message.topic_name;
-        let payload = &message.message.payload;
+    pub async fn parse_delta_message(
+        &self,
+        msg: &IoTCoreMessage,
+    ) -> ShadowResult<(String, Option<T::Delta>)> {
+        let topic = &msg.message.topic_name;
+        let payload = &msg.message.payload;
 
         // Parse shadow name from topic
         // Topic format: $aws/things/{thing_name}/shadow/name/{shadow_name}/update/delta
@@ -196,12 +189,10 @@ where
             if let Some(shadow_name) = middle.strip_suffix(expected_suffix) {
                 if shadow_name.starts_with(&self.shadow_pattern) {
                     // Parse delta response
-                    let delta_response: ShadowDeltaResponse<T> =
+                    let delta_response: DeltaResponse<T::Delta> =
                         serde_json::from_slice(payload).map_err(ShadowError::SerializationError)?;
 
-                    if let Some(delta_state) = delta_response.state {
-                        return Ok((shadow_name.to_string(), delta_state));
-                    }
+                    return Ok((shadow_name.to_string(), delta_response.state));
                 }
             }
         }
@@ -212,138 +203,97 @@ where
     }
 
     /// Get the current state of a specific shadow
-    pub async fn get_shadow(&self, shadow_name: &str) -> ShadowResult<Option<T>> {
+    pub async fn get_shadow(&self, shadow_name: &str) -> ShadowResult<T> {
         let shadows = self.shadows.read().await;
         let persistence = shadows.get(shadow_name).ok_or_else(|| {
             ShadowError::InvalidDocument(format!("Shadow '{}' not managed", shadow_name))
         })?;
 
-        // First try to load from local persistence
-        if let Some(document) = persistence.load().await? {
-            if let Some(reported) = document.reported() {
-                return Ok(Some(reported.clone()));
-            }
-        }
-
-        // If not in local storage, fetch from cloud
-        self.sync_shadow_from_cloud(shadow_name).await?;
-
-        // Try loading again after sync
-        if let Some(document) = persistence.load().await? {
-            Ok(document.reported().cloned())
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Sync a shadow from the cloud
-    async fn sync_shadow_from_cloud(&self, shadow_name: &str) -> ShadowResult<()> {
         let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
 
         // Create subscriptions for get responses
-        let accepted_stream = self.subscribe_to_topic(&topics.get_accepted).await?;
-        let rejected_stream = self.subscribe_to_topic(&topics.get_rejected).await?;
-
-        // Generate client token
-        let client_token = self.generate_client_token();
+        let (accepted_stream, rejected_stream) = futures::try_join!(
+            self.subscribe_to_topic(&topics.get_accepted),
+            self.subscribe_to_topic(&topics.get_rejected)
+        )?;
 
         // Publish get request
         self.publish_to_topic(&topics.get, b"").await?;
 
         // Wait for response
-        let response = self
-            .wait_for_get_response(accepted_stream, rejected_stream, &client_token)
+        let delta_state = self
+            .wait_for_get_response(accepted_stream, rejected_stream)
             .await?;
 
-        if let Some(document) = response {
-            // Update local persistence
-            let shadows = self.shadows.read().await;
-            if let Some(persistence) = shadows.get(shadow_name) {
-                persistence.save(&document).await?;
-            }
+        let mut state = persistence.load().await?.unwrap_or_default();
+        if let Some(delta) = delta_state.delta {
+            state.apply_patch(delta.clone());
+            persistence.save(&state).await?;
+            self.report(shadow_name, state.clone().into()).await?;
         }
 
-        Ok(())
+        Ok(state)
     }
 
     /// Report state for a specific shadow
-    pub async fn report(&self, shadow_name: &str, state: T) -> ShadowResult<()> {
+    async fn report(
+        &self,
+        shadow_name: &str,
+        reported: T::Reported,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let client_token = self.generate_client_token();
+
+        let request: Request<'_, T::Reported> = Request {
+            state: RequestState {
+                reported: Some(reported),
+            },
+            client_token: Some(&client_token),
+            version: None,
+        };
+
         let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
 
-        let update_request = ShadowUpdateRequest::new_reported(state.clone())
-            .with_client_token(self.generate_client_token());
-
         // Create subscriptions for update responses
-        let accepted_stream = self.subscribe_to_topic(&topics.update_accepted).await?;
-        let rejected_stream = self.subscribe_to_topic(&topics.update_rejected).await?;
+        let (accepted_stream, rejected_stream) = futures::try_join!(
+            self.subscribe_to_topic(&topics.update_accepted),
+            self.subscribe_to_topic(&topics.update_rejected)
+        )?;
 
-        // Publish update request
-        let payload = serde_json::to_vec(&update_request)?;
+        // Serialize and publish update request
+        let payload = serde_json::to_vec(&request)?;
+
         self.publish_to_topic(&topics.update, &payload).await?;
 
         // Wait for response
-        let client_token = update_request
-            .client_token
-            .unwrap_or_else(|| self.generate_client_token());
-        self.wait_for_update_response(accepted_stream, rejected_stream, &client_token)
-            .await?;
-
-        // Update local persistence
-        let shadows = self.shadows.read().await;
-        if let Some(persistence) = shadows.get(shadow_name) {
-            let mut current_doc = persistence.load().await?.unwrap_or_else(|| ShadowDocument {
-                state: ShadowState::default(),
-                metadata: None,
-                version: None,
-                timestamp: None,
-                client_token: None,
-            });
-
-            current_doc.state.reported = Some(state);
-            persistence.save(&current_doc).await?;
-        }
-
-        Ok(())
+        self.wait_for_update_response(accepted_stream, rejected_stream, Some(&client_token))
+            .await
     }
 
     /// Update desired state for a specific shadow
-    pub async fn update(&self, shadow_name: &str, desired: T) -> ShadowResult<()> {
-        let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
-
-        let update_request = ShadowUpdateRequest::new_desired(desired.clone())
-            .with_client_token(self.generate_client_token());
-
-        // Create subscriptions for update responses
-        let accepted_stream = self.subscribe_to_topic(&topics.update_accepted).await?;
-        let rejected_stream = self.subscribe_to_topic(&topics.update_rejected).await?;
-
-        // Publish update request
-        let payload = serde_json::to_vec(&update_request)?;
-        self.publish_to_topic(&topics.update, &payload).await?;
-
-        // Wait for response
-        let client_token = update_request
-            .client_token
-            .unwrap_or_else(|| self.generate_client_token());
-        self.wait_for_update_response(accepted_stream, rejected_stream, &client_token)
-            .await?;
-
-        // Update local persistence
+    pub async fn update<F: FnOnce(&T, &mut T::Reported)>(
+        &self,
+        shadow_name: &str,
+        f: F,
+    ) -> ShadowResult<T> {
         let shadows = self.shadows.read().await;
-        if let Some(persistence) = shadows.get(shadow_name) {
-            let mut current_doc = persistence.load().await?.unwrap_or_else(|| ShadowDocument {
-                state: ShadowState::default(),
-                metadata: None,
-                version: None,
-                timestamp: None,
-                client_token: None,
-            });
+        let persistence = shadows.get(shadow_name).ok_or_else(|| {
+            ShadowError::InvalidDocument(format!("Shadow '{}' not managed", shadow_name))
+        })?;
+        let mut update = T::Reported::default();
 
-            current_doc.state.desired = Some(desired);
-            persistence.save(&current_doc).await?;
+        let mut state = persistence.load().await?.unwrap_or_default();
+
+        f(&state, &mut update);
+
+        let response = self.report(shadow_name, update).await?;
+
+        if let Some(delta) = response.delta {
+            state.apply_patch(delta.clone());
+
+            persistence.save(&state).await?;
         }
 
-        Ok(())
+        Ok(state)
     }
 
     /// Delete a specific shadow
@@ -351,17 +301,16 @@ where
         let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
 
         // Create subscriptions for delete responses
-        let accepted_stream = self.subscribe_to_topic(&topics.delete_accepted).await?;
-        let rejected_stream = self.subscribe_to_topic(&topics.delete_rejected).await?;
-
-        // Generate client token
-        let client_token = self.generate_client_token();
+        let (accepted_stream, rejected_stream) = futures::try_join!(
+            self.subscribe_to_topic(&topics.delete_accepted),
+            self.subscribe_to_topic(&topics.delete_rejected)
+        )?;
 
         // Publish delete request
         self.publish_to_topic(&topics.delete, b"").await?;
 
         // Wait for response
-        self.wait_for_delete_response(accepted_stream, rejected_stream, &client_token)
+        self.wait_for_delete_response(accepted_stream, rejected_stream)
             .await?;
 
         // Remove from local management
@@ -385,8 +334,8 @@ where
         let mut result = HashMap::new();
 
         for (shadow_name, persistence) in shadows.iter() {
-            let state = if let Some(document) = persistence.load().await? {
-                document.reported().cloned()
+            let state = if let Some(reported) = persistence.load().await? {
+                Some(reported)
             } else {
                 None
             };
@@ -457,127 +406,118 @@ where
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        _client_token: &str,
-    ) -> ShadowResult<Option<ShadowDocument<T>>> {
-        let operation = async {
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let result = timeout(self.operation_timeout, async {
             tokio::select! {
-                message = accepted_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowAcceptedResponse<T> = serde_json::from_slice(&msg.message.payload)?;
-
-                        let document = ShadowDocument {
-                            state: response.state,
-                            metadata: response.metadata,
-                            version: response.version,
-                            timestamp: response.timestamp,
-                            client_token: response.client_token,
-                        };
-
-                        Ok(Some(document))
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(msg) = accepted_stream.next() => {
+                    let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
+                    Ok(response.state)
                 }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
+                Some(msg) = rejected_stream.next() => {
+                    let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
 
-                        if response.code == 404 {
-                            Ok(None)
-                        } else {
-                            Err(ShadowError::ShadowRejected {
-                                code: response.code,
-                                message: response.message,
-                            })
-                        }
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                    Err(ShadowError::ShadowRejected {
+                        code: error_response.code,
+                        message: error_response.message.to_string(),
+                    })
                 }
             }
-        };
+        }).await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 
     async fn wait_for_update_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        _client_token: &str,
-    ) -> ShadowResult<ShadowAcceptedResponse<T>> {
-        let operation = async {
-            tokio::select! {
-                message = accepted_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowAcceptedResponse<T> = serde_json::from_slice(&msg.message.payload)?;
-                        Ok(response)
-                    } else {
-                        Err(ShadowError::Timeout)
+        client_token: Option<&str>,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let result = timeout(self.operation_timeout, async {
+            loop {
+                tokio::select! {
+                    Some(msg) = accepted_stream.next() => {
+                        let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
+
+                        // Verify client token if present
+                        if response.client_token.is_some() && response.client_token != client_token {
+                            continue; // Not our response, but operation succeeded
+                        }
+
+                        return Ok(response.state);
                     }
-                }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
-                        Err(ShadowError::ShadowRejected {
-                            code: response.code,
-                            message: response.message,
-                        })
-                    } else {
-                        Err(ShadowError::Timeout)
+                    Some(msg) = rejected_stream.next() => {
+                        let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
+
+                        // Verify client token if present
+                        if error_response.client_token.is_some() && error_response.client_token != client_token {
+                            continue; // Not our response, continue waiting
+                        }
+
+                        return Err(ShadowError::ShadowRejected {
+                            code: error_response.code,
+                            message: error_response.message.to_string(),
+                        });
                     }
                 }
             }
-        };
+        }).await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(state)) => Ok(state),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 
     async fn wait_for_delete_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        _client_token: &str,
     ) -> ShadowResult<()> {
-        let operation = async {
+        let result = timeout(self.operation_timeout, async {
             tokio::select! {
-                message = accepted_stream.next() => {
-                    if let Some(_msg) = message {
-                        Ok(())
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(_message) = accepted_stream.next() => {
+                    Ok(())
                 }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
-                        Err(ShadowError::ShadowRejected {
-                            code: response.code,
-                            message: response.message,
-                        })
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(msg) = rejected_stream.next() => {
+                    let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
+
+                    Err(ShadowError::ShadowRejected {
+                        code: error_response.code,
+                        message: error_response.message.to_string(),
+                    })
                 }
             }
-        };
+        })
+        .await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustot::shadows::rustot_derive::shadow;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
+    #[shadow]
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     struct FlowState {
         flow_rate: f64,

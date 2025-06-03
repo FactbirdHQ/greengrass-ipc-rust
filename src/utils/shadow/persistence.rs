@@ -4,10 +4,9 @@
 //! It ensures atomic writes and handles concurrent access safely.
 
 use crate::utils::shadow::error::ShadowResult;
-use crate::utils::shadow::ShadowDocument;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::Write;
+use crate::utils::shadow::ShadowState;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use tokio::fs as async_fs;
@@ -23,7 +22,7 @@ pub struct FileBasedPersistence<T> {
 #[allow(unused)]
 impl<T> FileBasedPersistence<T>
 where
-    T: Serialize + for<'de> Deserialize<'de> + Send + Sync,
+    T: ShadowState + Serialize + DeserializeOwned,
 {
     /// Create a new file-based persistence instance
     pub fn new(file_path: PathBuf) -> Self {
@@ -34,7 +33,7 @@ where
     }
 
     /// Load the shadow document from the file
-    pub async fn load(&self) -> ShadowResult<Option<ShadowDocument<T>>> {
+    pub async fn load(&self) -> ShadowResult<Option<T>> {
         // Check if file exists
         if !self.file_path.exists() {
             return Ok(None);
@@ -49,12 +48,11 @@ where
         }
 
         // Parse JSON
-        let document: ShadowDocument<T> = serde_json::from_str(&content)?;
-        Ok(Some(document))
+        Ok(Some(serde_json::from_str(&content)?))
     }
 
     /// Save the shadow document to the file atomically
-    pub async fn save(&self, document: &ShadowDocument<T>) -> ShadowResult<()> {
+    pub async fn save(&self, document: &T) -> ShadowResult<()> {
         // Ensure parent directory exists
         if let Some(parent) = self.file_path.parent() {
             async_fs::create_dir_all(parent).await?;
@@ -107,52 +105,6 @@ where
         temp_path
     }
 
-    /// Load synchronously (for cases where async is not needed)
-    pub fn load_sync(&self) -> ShadowResult<Option<ShadowDocument<T>>> {
-        // Check if file exists
-        if !self.file_path.exists() {
-            return Ok(None);
-        }
-
-        // Read the file content
-        let content = fs::read_to_string(&self.file_path)?;
-
-        // Handle empty files
-        if content.trim().is_empty() {
-            return Ok(None);
-        }
-
-        // Parse JSON
-        let document: ShadowDocument<T> = serde_json::from_str(&content)?;
-        Ok(Some(document))
-    }
-
-    /// Save synchronously (for cases where async is not needed)
-    pub fn save_sync(&self, document: &ShadowDocument<T>) -> ShadowResult<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // Serialize to JSON with pretty printing
-        let json_content = serde_json::to_string_pretty(document)?;
-
-        // Write atomically using a temporary file
-        let temp_path = self.temp_file_path();
-
-        // Write to temporary file first
-        let mut temp_file = fs::File::create(&temp_path)?;
-        temp_file.write_all(json_content.as_bytes())?;
-        temp_file.flush()?;
-        temp_file.sync_all()?;
-        drop(temp_file);
-
-        // Atomically move temporary file to final location
-        fs::rename(&temp_path, &self.file_path)?;
-
-        Ok(())
-    }
-
     /// Get the size of the shadow document file in bytes
     pub async fn file_size(&self) -> ShadowResult<u64> {
         let metadata = async_fs::metadata(&self.file_path).await?;
@@ -168,105 +120,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::shadow::shadow;
+
     use super::*;
-    use crate::utils::shadow::{ShadowDocument, ShadowError, ShadowState};
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
-    /// Builder for creating file-based persistence with default paths
-    pub struct PersistenceBuilder {
-        base_dir: Option<PathBuf>,
-        thing_name: Option<String>,
-        shadow_name: Option<String>,
-    }
-
-    impl PersistenceBuilder {
-        /// Create a new persistence builder
-        pub fn new() -> Self {
-            Self {
-                base_dir: None,
-                thing_name: None,
-                shadow_name: None,
-            }
-        }
-
-        /// Set the base directory for shadow files
-        pub fn base_dir<P: Into<PathBuf>>(mut self, dir: P) -> Self {
-            self.base_dir = Some(dir.into());
-            self
-        }
-
-        /// Set the thing name
-        pub fn thing_name<S: Into<String>>(mut self, name: S) -> Self {
-            self.thing_name = Some(name.into());
-            self
-        }
-
-        /// Set the shadow name (for named shadows)
-        pub fn shadow_name<S: Into<String>>(mut self, name: S) -> Self {
-            self.shadow_name = Some(name.into());
-            self
-        }
-
-        /// Build the persistence instance with default paths
-        pub fn build<T>(self) -> ShadowResult<FileBasedPersistence<T>>
-        where
-            T: Serialize + for<'de> Deserialize<'de> + Send + Sync,
-        {
-            let base_dir = self.base_dir.unwrap_or_else(|| {
-                // Use a default directory in the user's home or temp
-                if let Some(home) = dirs::home_dir() {
-                    home.join(".aws").join("shadows")
-                } else {
-                    std::env::temp_dir().join("aws_shadows")
-                }
-            });
-
-            let thing_name = self.thing_name.ok_or_else(|| {
-                ShadowError::InvalidDocument("Thing name is required".to_string())
-            })?;
-
-            let file_name = if let Some(shadow_name) = self.shadow_name {
-                format!("{}_{}.json", thing_name, shadow_name)
-            } else {
-                format!("{}_classic.json", thing_name)
-            };
-
-            let file_path = base_dir.join(file_name);
-            Ok(FileBasedPersistence::new(file_path))
-        }
-    }
-
-    impl Default for PersistenceBuilder {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
+    #[shadow]
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     struct TestState {
         temperature: f64,
         humidity: f64,
-    }
-
-    fn create_test_document() -> ShadowDocument<TestState> {
-        ShadowDocument {
-            state: ShadowState {
-                desired: Some(TestState {
-                    temperature: 25.0,
-                    humidity: 50.0,
-                }),
-                reported: Some(TestState {
-                    temperature: 23.5,
-                    humidity: 45.2,
-                }),
-                delta: None,
-            },
-            metadata: None,
-            version: Some(1),
-            timestamp: Some(1234567890),
-            client_token: Some("test-token".to_string()),
-        }
     }
 
     #[tokio::test]
@@ -275,7 +139,7 @@ mod tests {
         let file_path = temp_dir.path().join("test_shadow.json");
         let persistence = FileBasedPersistence::new(file_path);
 
-        let original_doc = create_test_document();
+        let original_doc = TestState::default();
 
         // Save the document
         persistence.save(&original_doc).await.unwrap();
@@ -302,7 +166,7 @@ mod tests {
         let file_path = temp_dir.path().join("test_shadow.json");
         let persistence = FileBasedPersistence::new(file_path.clone());
 
-        let doc = create_test_document();
+        let doc = TestState::default();
 
         // Save and verify exists
         persistence.save(&doc).await.unwrap();
@@ -319,7 +183,7 @@ mod tests {
         let file_path = temp_dir.path().join("atomic_test.json");
         let persistence = FileBasedPersistence::new(file_path.clone());
 
-        let doc = create_test_document();
+        let doc = TestState::default();
 
         // Save the document
         persistence.save(&doc).await.unwrap();
@@ -334,54 +198,13 @@ mod tests {
         assert_eq!(doc, loaded);
     }
 
-    #[test]
-    fn test_sync_operations() {
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("sync_test.json");
-        let persistence = FileBasedPersistence::new(file_path);
-
-        let doc = create_test_document();
-
-        // Save synchronously
-        persistence.save_sync(&doc).unwrap();
-
-        // Load synchronously
-        let loaded = persistence.load_sync().unwrap().unwrap();
-        assert_eq!(doc, loaded);
-    }
-
-    #[tokio::test]
-    async fn test_persistence_builder() {
-        let temp_dir = TempDir::new().unwrap();
-
-        let persistence: FileBasedPersistence<TestState> = PersistenceBuilder::new()
-            .base_dir(temp_dir.path())
-            .thing_name("test-device")
-            .shadow_name("config")
-            .build()
-            .unwrap();
-
-        let expected_path = temp_dir.path().join("test-device_config.json");
-        assert_eq!(persistence.file_path(), expected_path);
-
-        // Test classic shadow (no shadow name)
-        let classic_persistence: FileBasedPersistence<TestState> = PersistenceBuilder::new()
-            .base_dir(temp_dir.path())
-            .thing_name("test-device")
-            .build()
-            .unwrap();
-
-        let expected_classic_path = temp_dir.path().join("test-device_classic.json");
-        assert_eq!(classic_persistence.file_path(), expected_classic_path);
-    }
-
     #[tokio::test]
     async fn test_file_metadata() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("metadata_test.json");
         let persistence = FileBasedPersistence::new(file_path);
 
-        let doc = create_test_document();
+        let doc = TestState::default();
         persistence.save(&doc).await.unwrap();
 
         // Test file size

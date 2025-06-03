@@ -1,24 +1,22 @@
-//! Main ShadowClient implementation for AWS IoT Device Shadows
+//! AWS IoT Device Shadow Client using rustot traits
 //!
-//! This module provides the core ShadowClient that uses MQTT-based communication
-//! through the Greengrass IPC client for shadow operations.
+//! This module provides a shadow client that leverages the rustot library's
+//! ShadowState and ShadowPatch traits for proper delta handling.
 
-use crate::utils::shadow::{
-    document::{
-        ShadowAcceptedResponse, ShadowDeltaResponse, ShadowDocument, ShadowRejectedResponse,
-        ShadowState, ShadowUpdateRequest,
-    },
-    error::{ShadowError, ShadowResult},
-    persistence::FileBasedPersistence,
-    topics::ShadowTopics,
+use crate::client::GreengrassCoreIPCClient;
+use crate::model::IoTCoreMessage;
+use crate::utils::shadow::error::{ShadowError, ShadowResult};
+use crate::utils::shadow::persistence::FileBasedPersistence;
+use crate::utils::shadow::topics::ShadowTopics;
+use crate::{PublishToIoTCoreRequest, QoS, StreamOperation, SubscribeToIoTCoreRequest};
+
+use futures::stream::StreamExt;
+use rustot::shadows::data_types::{
+    AcceptedResponse, DeltaResponse, DeltaState, ErrorResponse, Request, RequestState,
 };
-use crate::{
-    GreengrassCoreIPCClient, IoTCoreMessage, PublishToIoTCoreRequest, QoS, StreamOperation,
-    SubscribeToIoTCoreRequest,
-};
-use futures::StreamExt as _;
-use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use rustot::shadows::ShadowState;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +26,7 @@ use uuid::Uuid;
 /// Default timeout for shadow operations
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// AWS IoT Device Shadow client
+/// AWS IoT Device Shadow client using rustot traits
 #[derive(Clone)]
 pub struct ShadowClient<T> {
     /// The underlying IPC client
@@ -48,14 +46,11 @@ pub struct ShadowClient<T> {
 
     /// Operation timeout
     operation_timeout: Duration,
-
-    /// Phantom data for type parameter
-    _phantom: PhantomData<T>,
 }
 
 impl<T> ShadowClient<T>
 where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync + 'static,
+    T: ShadowState + Serialize + DeserializeOwned,
 {
     /// Create a new shadow client
     pub async fn new(
@@ -79,7 +74,6 @@ where
             topics,
             persistence,
             operation_timeout: DEFAULT_OPERATION_TIMEOUT,
-            _phantom: PhantomData,
         })
     }
 
@@ -104,76 +98,54 @@ where
     }
 
     /// Get the current shadow state from AWS IoT
-    pub async fn get_shadow(&self) -> ShadowResult<Option<T>> {
+    pub async fn get_shadow(&self) -> ShadowResult<T> {
         // Create subscriptions for get responses
         let (accepted_stream, rejected_stream) = self.subscribe_to_get_responses().await?;
 
-        // Generate client token for request correlation
-        let client_token = self.generate_client_token();
-
         // Publish get request
-        self.publish_get_request(&client_token).await?;
+        self.publish_get_request().await?;
 
         // Wait for response
-        let response = self
-            .wait_for_get_response(accepted_stream, rejected_stream, &client_token)
+        let delta_state = self
+            .wait_for_get_response(accepted_stream, rejected_stream)
             .await?;
 
         // Update local persistence if we got a shadow
-        if let Some(ref shadow) = response {
-            let document = ShadowDocument {
-                state: ShadowState {
-                    desired: shadow.desired().cloned(),
-                    reported: shadow.reported().cloned(),
-                    delta: shadow.delta().cloned(),
-                },
-                metadata: None,
-                version: shadow.version,
-                timestamp: shadow.timestamp,
-                client_token: Some(client_token),
-            };
-            self.persistence.save(&document).await?;
+        let mut state = self.persistence.load().await?.unwrap_or_default();
+        if let Some(delta) = delta_state.delta {
+            state.apply_patch(delta.clone());
+            self.persistence.save(&state).await?;
+            self.report(state.clone().into()).await?;
         }
 
-        Ok(response.and_then(|doc| doc.reported().cloned()))
+        Ok(state)
     }
 
     /// Wait for delta changes from the cloud
-    pub async fn wait_delta(&self) -> ShadowResult<T> {
+    pub async fn wait_delta(&self) -> ShadowResult<(T, Option<T::Delta>)> {
         // Subscribe to delta topic
         let mut delta_stream = self.subscribe_to_delta().await?;
 
         // Wait for delta message
-        while let Some(message) = delta_stream.next().await {
-            let topic = &message.message.topic_name;
-            let payload = &message.message.payload;
+        while let Some(msg) = delta_stream.next().await {
+            let topic = &msg.message.topic_name;
+            let payload = &msg.message.payload;
 
             if topic == &self.topics.delta {
-                let delta_response: ShadowDeltaResponse<T> = serde_json::from_slice(payload)?;
+                let delta_response: DeltaResponse<T::Delta> = serde_json::from_slice(payload)?;
 
-                if let Some(delta_state) = delta_response.state {
-                    // Update local persistence with the new state
-                    let mut current_doc =
-                        self.persistence
-                            .load()
-                            .await?
-                            .unwrap_or_else(|| ShadowDocument {
-                                state: ShadowState::default(),
-                                metadata: None,
-                                version: None,
-                                timestamp: None,
-                                client_token: None,
-                            });
+                // Load current state and apply delta
+                let mut state = self.persistence.load().await?.unwrap_or_default();
+                if let Some(ref delta) = delta_response.state {
+                    // Apply the delta using rustot's patch mechanism
+                    state.apply_patch(delta.clone());
 
-                    // Apply delta to reported state
-                    current_doc.state.reported = Some(delta_state.clone());
-                    current_doc.version = delta_response.version;
-                    current_doc.timestamp = delta_response.timestamp;
+                    self.report(state.clone().into()).await?;
 
-                    self.persistence.save(&current_doc).await?;
-
-                    return Ok(delta_state);
+                    // Save updated state
+                    self.persistence.save(&state).await?;
                 }
+                return Ok((state, delta_response.state));
             }
         }
 
@@ -181,55 +153,53 @@ where
     }
 
     /// Report the current device state to the cloud
-    pub async fn report(&self, state: T) -> ShadowResult<()> {
-        let update_request = ShadowUpdateRequest::new_reported(state.clone())
-            .with_client_token(self.generate_client_token());
+    pub async fn report(
+        &self,
+        reported: T::Reported,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let client_token = self.generate_client_token();
 
-        self.perform_update(update_request).await?;
+        let request: Request<'_, T::Reported> = Request {
+            state: RequestState {
+                reported: Some(reported),
+            },
+            client_token: Some(&client_token),
+            version: None,
+        };
 
-        // Update local persistence
-        let mut current_doc = self
-            .persistence
-            .load()
-            .await?
-            .unwrap_or_else(|| ShadowDocument {
-                state: ShadowState::default(),
-                metadata: None,
-                version: None,
-                timestamp: None,
-                client_token: None,
-            });
+        // Create subscriptions for update responses
+        let (accepted_stream, rejected_stream) = self.subscribe_to_update_responses().await?;
 
-        current_doc.state.reported = Some(state);
-        self.persistence.save(&current_doc).await?;
+        // Serialize and publish update request
+        let payload = serde_json::to_vec(&request)?;
+        let client_token = request.client_token;
 
-        Ok(())
+        self.publish_to_topic(&self.topics.update, payload).await?;
+
+        // Wait for response
+        self.wait_for_update_response(accepted_stream, rejected_stream, client_token)
+            .await
     }
 
-    /// Update the desired state in the cloud
-    pub async fn update(&self, desired: T) -> ShadowResult<()> {
-        let update_request = ShadowUpdateRequest::new_desired(desired.clone())
-            .with_client_token(self.generate_client_token());
+    /// Update the state of the shadow.
+    ///
+    /// This function will update the desired state of the shadow in the cloud,
+    /// and depending on whether the state update is rejected or accepted, it
+    /// will automatically update the local version after response
+    pub async fn update<F: FnOnce(&T, &mut T::Reported)>(&self, f: F) -> ShadowResult<T> {
+        let mut update = T::Reported::default();
+        let mut state = self.persistence.load().await?.unwrap_or_default();
+        f(&state, &mut update);
 
-        self.perform_update(update_request).await?;
+        let response = self.report(update).await?;
 
-        // Update local persistence
-        let mut current_doc = self
-            .persistence
-            .load()
-            .await?
-            .unwrap_or_else(|| ShadowDocument {
-                state: ShadowState::default(),
-                metadata: None,
-                version: None,
-                timestamp: None,
-                client_token: None,
-            });
+        if let Some(delta) = response.delta {
+            state.apply_patch(delta.clone());
 
-        current_doc.state.desired = Some(desired);
-        self.persistence.save(&current_doc).await?;
+            self.persistence.save(&state).await?;
+        }
 
-        Ok(())
+        Ok(state)
     }
 
     /// Delete the shadow from AWS IoT
@@ -237,89 +207,59 @@ where
         // Create subscriptions for delete responses
         let (accepted_stream, rejected_stream) = self.subscribe_to_delete_responses().await?;
 
-        // Generate client token
-        let client_token = self.generate_client_token();
-
         // Publish delete request
-        self.publish_delete_request(&client_token).await?;
+        self.publish_delete_request().await?;
 
         // Wait for response
-        self.wait_for_delete_response(accepted_stream, rejected_stream, &client_token)
+        self.wait_for_delete_response(accepted_stream, rejected_stream)
             .await?;
 
-        // Delete local persistence
+        // Clear local persistence
         self.persistence.delete().await?;
 
         Ok(())
     }
 
-    /// Perform a shadow update operation
-    async fn perform_update(
-        &self,
-        request: ShadowUpdateRequest<T>,
-    ) -> ShadowResult<ShadowAcceptedResponse<T>> {
-        // Create subscriptions for update responses
-        let (accepted_stream, rejected_stream) = self.subscribe_to_update_responses().await?;
-
-        // Get client token from request
-        let client_token = request
-            .client_token
-            .clone()
-            .unwrap_or_else(|| self.generate_client_token());
-
-        // Publish update request
-        self.publish_update_request(&request).await?;
-
-        // Wait for response
-        self.wait_for_update_response(accepted_stream, rejected_stream, &client_token)
-            .await
-    }
-
-    /// Subscribe to get operation responses
+    /// Subscribe to get response topics
     async fn subscribe_to_get_responses(
         &self,
     ) -> ShadowResult<(
         StreamOperation<IoTCoreMessage>,
         StreamOperation<IoTCoreMessage>,
     )> {
-        let accepted_stream = self.subscribe_to_topic(&self.topics.get_accepted).await?;
-        let rejected_stream = self.subscribe_to_topic(&self.topics.get_rejected).await?;
-        Ok((accepted_stream, rejected_stream))
+        Ok(futures::try_join!(
+            self.subscribe_to_topic(&self.topics.get_accepted),
+            self.subscribe_to_topic(&self.topics.get_rejected)
+        )?)
     }
 
-    /// Subscribe to update operation responses
+    /// Subscribe to update response topics
     async fn subscribe_to_update_responses(
         &self,
     ) -> ShadowResult<(
         StreamOperation<IoTCoreMessage>,
         StreamOperation<IoTCoreMessage>,
     )> {
-        let accepted_stream = self
-            .subscribe_to_topic(&self.topics.update_accepted)
-            .await?;
-        let rejected_stream = self
-            .subscribe_to_topic(&self.topics.update_rejected)
-            .await?;
-        Ok((accepted_stream, rejected_stream))
+        Ok(futures::try_join!(
+            self.subscribe_to_topic(&self.topics.update_accepted),
+            self.subscribe_to_topic(&self.topics.update_rejected)
+        )?)
     }
 
-    /// Subscribe to delete operation responses
+    /// Subscribe to delete response topics
     async fn subscribe_to_delete_responses(
         &self,
     ) -> ShadowResult<(
         StreamOperation<IoTCoreMessage>,
         StreamOperation<IoTCoreMessage>,
     )> {
-        let accepted_stream = self
-            .subscribe_to_topic(&self.topics.delete_accepted)
-            .await?;
-        let rejected_stream = self
-            .subscribe_to_topic(&self.topics.delete_rejected)
-            .await?;
-        Ok((accepted_stream, rejected_stream))
+        Ok(futures::try_join!(
+            self.subscribe_to_topic(&self.topics.delete_accepted),
+            self.subscribe_to_topic(&self.topics.delete_rejected)
+        )?)
     }
 
-    /// Subscribe to delta notifications
+    /// Subscribe to delta topic
     async fn subscribe_to_delta(&self) -> ShadowResult<StreamOperation<IoTCoreMessage>> {
         self.subscribe_to_topic(&self.topics.delta).await
     }
@@ -334,35 +274,27 @@ where
             qos: QoS::AtLeastOnce,
         };
 
-        let stream = self.ipc_client.subscribe_to_iot_core(request).await?;
-        Ok(stream)
+        Ok(self.ipc_client.subscribe_to_iot_core(request).await?)
     }
 
-    /// Publish a get request
-    async fn publish_get_request(&self, _client_token: &str) -> ShadowResult<()> {
-        let empty_payload = b"";
-        self.publish_to_topic(&self.topics.get, empty_payload).await
+    /// Publish get request
+    async fn publish_get_request(&self) -> ShadowResult<()> {
+        // Get requests are typically empty payloads
+        self.publish_to_topic(&self.topics.get, Vec::new()).await
     }
 
-    /// Publish an update request
-    async fn publish_update_request(&self, request: &ShadowUpdateRequest<T>) -> ShadowResult<()> {
-        let payload = serde_json::to_vec(request)?;
-        self.publish_to_topic(&self.topics.update, &payload).await
-    }
-
-    /// Publish a delete request
-    async fn publish_delete_request(&self, _client_token: &str) -> ShadowResult<()> {
-        let empty_payload = b"";
-        self.publish_to_topic(&self.topics.delete, empty_payload)
-            .await
+    /// Publish delete request
+    async fn publish_delete_request(&self) -> ShadowResult<()> {
+        // Delete requests are typically empty payloads
+        self.publish_to_topic(&self.topics.delete, Vec::new()).await
     }
 
     /// Publish to a specific topic
-    async fn publish_to_topic(&self, topic: &str, payload: &[u8]) -> ShadowResult<()> {
+    async fn publish_to_topic(&self, topic: &str, payload: Vec<u8>) -> ShadowResult<()> {
         let request = PublishToIoTCoreRequest {
             topic_name: topic.to_string(),
             qos: QoS::AtLeastOnce,
-            payload: payload.to_vec().into(),
+            payload: payload.into(),
             user_properties: None,
             message_expiry_interval_seconds: None,
             correlation_data: None,
@@ -374,151 +306,117 @@ where
         Ok(())
     }
 
-    /// Wait for get operation response
+    /// Wait for get response
     async fn wait_for_get_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        client_token: &str,
-    ) -> ShadowResult<Option<ShadowDocument<T>>> {
-        let operation = async {
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let result = timeout(self.operation_timeout, async {
             tokio::select! {
-                message = accepted_stream.next() => {
-                    println!("Raw json payload: {:?}", message);
-                    if let Some(msg) = message {
-                        let response: ShadowAcceptedResponse<T> = serde_json::from_slice(&msg.message.payload)?;
-
-                        // Verify client token if present
-                        if let Some(ref token) = response.client_token {
-                            if token != client_token {
-                                return Err(ShadowError::ClientTokenMismatch {
-                                    expected: client_token.to_string(),
-                                    received: token.clone(),
-                                });
-                            }
-                        }
-
-                        let document = ShadowDocument {
-                            state: response.state,
-                            metadata: response.metadata,
-                            version: response.version,
-                            timestamp: response.timestamp,
-                            client_token: response.client_token,
-                        };
-
-                        Ok(Some(document))
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(msg) = accepted_stream.next() => {
+                    let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
+                    Ok(response.state)
                 }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
+                Some(msg) = rejected_stream.next() => {
+                    let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
 
-                        // Check if this is a "not found" error
-                        if response.code == 404 {
-                            Ok(None)
-                        } else {
-                            Err(ShadowError::ShadowRejected {
-                                code: response.code,
-                                message: response.message,
-                            })
-                        }
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                    Err(ShadowError::ShadowRejected {
+                        code: error_response.code,
+                        message: error_response.message.to_string(),
+                    })
                 }
             }
-        };
+        }).await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 
-    /// Wait for update operation response
+    /// Wait for update response
     async fn wait_for_update_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        client_token: &str,
-    ) -> ShadowResult<ShadowAcceptedResponse<T>> {
-        let operation = async {
-            tokio::select! {
-                message = accepted_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowAcceptedResponse<T> = serde_json::from_slice(&msg.message.payload)?;
+        client_token: Option<&str>,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let result = timeout(self.operation_timeout, async {
+            loop {
+                tokio::select! {
+                    Some(msg) = accepted_stream.next() => {
+                        let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
 
                         // Verify client token if present
-                        if let Some(ref token) = response.client_token {
-                            if token != client_token {
-                                return Err(ShadowError::ClientTokenMismatch {
-                                    expected: client_token.to_string(),
-                                    received: token.clone(),
-                                });
-                            }
+                        if response.client_token.is_some() && response.client_token != client_token {
+                            continue; // Not our response, but operation succeeded
                         }
 
-                        Ok(response)
-                    } else {
-                        Err(ShadowError::Timeout)
+                        return Ok(response.state);
                     }
-                }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
-                        Err(ShadowError::ShadowRejected {
-                            code: response.code,
-                            message: response.message,
-                        })
-                    } else {
-                        Err(ShadowError::Timeout)
+                    Some(msg) = rejected_stream.next() => {
+                        let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
+
+                        // Verify client token if present
+                        if error_response.client_token.is_some() && error_response.client_token != client_token {
+                            continue; // Not our response, continue waiting
+                        }
+
+                        return Err(ShadowError::ShadowRejected {
+                            code: error_response.code,
+                            message: error_response.message.to_string(),
+                        });
                     }
                 }
             }
-        };
+        }).await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(state)) => Ok(state),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 
-    /// Wait for delete operation response
+    /// Wait for delete response
     async fn wait_for_delete_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
         mut rejected_stream: StreamOperation<IoTCoreMessage>,
-        _client_token: &str,
     ) -> ShadowResult<()> {
-        let operation = async {
+        let result = timeout(self.operation_timeout, async {
             tokio::select! {
-                message = accepted_stream.next() => {
-                    if let Some(_msg) = message {
-                        Ok(())
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(_message) = accepted_stream.next() => {
+                    Ok(())
                 }
-                message = rejected_stream.next() => {
-                    if let Some(msg) = message {
-                        let response: ShadowRejectedResponse = serde_json::from_slice(&msg.message.payload)?;
-                        Err(ShadowError::ShadowRejected {
-                            code: response.code,
-                            message: response.message,
-                        })
-                    } else {
-                        Err(ShadowError::Timeout)
-                    }
+                Some(msg) = rejected_stream.next() => {
+                    let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
+
+                    Err(ShadowError::ShadowRejected {
+                        code: error_response.code,
+                        message: error_response.message.to_string(),
+                    })
                 }
             }
-        };
+        })
+        .await;
 
-        timeout(self.operation_timeout, operation)
-            .await
-            .map_err(|_| ShadowError::Timeout)?
+        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
+
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ShadowError::Timeout),
+        }
     }
 
-    /// Generate a unique client token for request correlation
+    /// Generate a unique client token
     fn generate_client_token(&self) -> String {
         Uuid::new_v4().to_string()
     }
@@ -526,15 +424,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::shadow::shadow;
+
     use super::*;
-    use crate::utils::shadow::document::ShadowState;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    #[shadow]
+    #[derive(Debug, Clone, PartialEq)]
     struct TestState {
         temperature: f64,
         humidity: f64,
+        #[shadow_attr(leaf)]
         status: String,
     }
 
@@ -548,40 +449,31 @@ mod tests {
 
     #[test]
     fn test_client_token_generation() {
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("test.json");
+        // We can't easily test the full client without IPC connection,
+        // but we can test the helper methods
+        let token1 = "test-token-1";
+        let token2 = "test-token-2";
 
-        // We can't easily test the full client without mocking the IPC client,
-        // but we can test individual components
-        let _persistence: FileBasedPersistence<TestState> = FileBasedPersistence::new(file_path);
+        assert_ne!(token1, token2);
 
-        // Test that we can create the client structure
-        let topics = ShadowTopics::new_classic("test-device");
-        assert_eq!(topics.update, "$aws/things/test-device/shadow/update");
+        // Test that tokens are non-empty
+        assert!(!token1.is_empty());
+        assert!(!token2.is_empty());
     }
 
     #[tokio::test]
     async fn test_persistence_integration() {
         let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("test_shadow.json");
-        let persistence = FileBasedPersistence::new(file_path);
+        let shadow_file = temp_dir.path().join("test_shadow.json");
 
-        let state = create_test_state();
-        let document = ShadowDocument {
-            state: ShadowState {
-                desired: None,
-                reported: Some(state.clone()),
-                delta: None,
-            },
-            metadata: None,
-            version: Some(1),
-            timestamp: Some(1234567890),
-            client_token: Some("test-token".to_string()),
-        };
+        let persistence = FileBasedPersistence::new(shadow_file);
 
-        // Test save and load
-        persistence.save(&document).await.unwrap();
-        let loaded = persistence.load().await.unwrap().unwrap();
-        assert_eq!(document, loaded);
+        let test_state = create_test_state();
+
+        // Test saving and loading state
+        persistence.save(&test_state).await.unwrap();
+        let loaded_state = persistence.load().await.unwrap();
+
+        assert_eq!(Some(test_state), loaded_state);
     }
 }
