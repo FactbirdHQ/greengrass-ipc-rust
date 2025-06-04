@@ -396,6 +396,40 @@ impl Connection {
         Ok(())
     }
 
+    /// Send a TERMINATE_STREAM message for an operation
+    pub async fn send_terminate_stream_message(&self, operation_id: &str) -> Result<()> {
+        // Find the stream ID for this operation
+        let stream_id = {
+            let mapping = self.stream_to_operation_map.read().await;
+            mapping
+                .iter()
+                .find(|(_, op_id)| *op_id == operation_id)
+                .map(|(stream_id, _)| *stream_id)
+        };
+
+        if let Some(stream_id) = stream_id {
+            // Create a TERMINATE_STREAM message
+            let mut terminate_message = crate::event_stream::EventStreamMessage::new();
+            terminate_message = terminate_message
+                .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+                .with_header(crate::event_stream::Header::StreamId(stream_id))
+                .with_header(crate::event_stream::Header::MessageFlags(2)) // TERMINATE_STREAM = 2
+                .with_header(crate::event_stream::Header::ContentType("application/json".to_string()));
+
+            // Try to send the terminate message, but don't fail if it doesn't work
+            // (stream might already be closed by the server)
+            if let Err(e) = self.send_message(&terminate_message).await {
+                log::debug!("Failed to send TERMINATE_STREAM message for operation {}: {}", operation_id, e);
+            } else {
+                log::debug!("Sent TERMINATE_STREAM message for operation {}", operation_id);
+            }
+        } else {
+            log::debug!("No stream ID found for operation {}, cannot send TERMINATE_STREAM", operation_id);
+        }
+
+        Ok(())
+    }
+
     /// Main message read loop that processes incoming messages with dedicated read half
     async fn message_read_loop_with_reader(
         &self,

@@ -799,6 +799,13 @@ impl<Resp> StreamOperation<Resp> {
     }
 
     pub async fn close(self) -> Result<()> {
+        // First, send a TERMINATE_STREAM message to notify Greengrass
+        // that we're closing this subscription
+        self.connection
+            .send_terminate_stream_message(&self.operation_id)
+            .await?;
+
+        // Then unregister the local stream handler
         self.connection
             .unregister_stream_handler(&self.operation_id)
             .await
@@ -821,6 +828,12 @@ impl<Resp> Drop for StreamOperation<Resp> {
 
         // Spawn a cleanup task since Drop cannot be async
         tokio::spawn(async move {
+            // Try to send TERMINATE_STREAM message first
+            if let Err(e) = connection.send_terminate_stream_message(&operation_id).await {
+                log::debug!("Failed to send TERMINATE_STREAM during drop: {}", e);
+            }
+            
+            // Then unregister the handler
             if let Err(e) = connection.unregister_stream_handler(&operation_id).await {
                 log::warn!("Failed to unregister stream handler during drop: {}", e);
             }

@@ -68,6 +68,7 @@ mod topics;
 pub use client::ShadowClient;
 pub use error::ShadowError;
 pub use manager::ShadowManager;
+pub use rustot;
 pub use rustot::shadows::data_types::{
     // Re-export rustot derive macros
     AcceptedResponse,
