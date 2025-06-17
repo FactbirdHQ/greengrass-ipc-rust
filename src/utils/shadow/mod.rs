@@ -61,12 +61,14 @@
 
 mod client;
 mod error;
+#[cfg(feature = "shadow-manager")]
 mod manager;
 mod persistence;
 mod topics;
 
 pub use client::ShadowClient;
 pub use error::ShadowError;
+#[cfg(feature = "shadow-manager")]
 pub use manager::ShadowManager;
 pub use rustot;
 pub use rustot::shadows::data_types::{

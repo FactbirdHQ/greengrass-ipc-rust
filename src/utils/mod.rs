@@ -3,4 +3,5 @@
 //! This module contains higher-level abstractions and utilities built on top
 //! of the core Greengrass IPC functionality.
 
+#[cfg(feature = "shadow-util")]
 pub mod shadow;

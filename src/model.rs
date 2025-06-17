@@ -6,9 +6,35 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use serde_with::{base64::Base64, serde_as, DeserializeAs, SerializeAs};
 
-
 /// Helper for serializing/deserializing Bytes as Vec<u8>
 struct BytesAsVec;
+
+/// Helper module for Unix timestamp with fractional seconds
+mod unix_timestamp_f64 {
+    use chrono::{DateTime, Utc};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let timestamp =
+            dt.timestamp() as f64 + (dt.timestamp_subsec_nanos() as f64 / 1_000_000_000.0);
+        timestamp.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let timestamp = f64::deserialize(deserializer)?;
+        DateTime::from_timestamp(
+            timestamp as i64,
+            (timestamp.fract() * 1_000_000_000.0) as u32,
+        )
+        .ok_or_else(|| serde::de::Error::custom("Invalid timestamp"))
+    }
+}
 
 impl SerializeAs<Bytes> for BytesAsVec {
     fn serialize_as<S>(source: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
@@ -313,7 +339,10 @@ pub struct LocalDeployment {
     pub created_on: Option<String>,
 
     /// The components in the deployment and their details
-    #[serde(rename = "deploymentStatusDetails", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deploymentStatusDetails",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub deployment_status_details: Option<DeploymentStatusDetails>,
 }
 
@@ -341,19 +370,31 @@ pub enum DeploymentStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentStatusDetails {
     /// Detailed deployment status as a string
-    #[serde(rename = "detailedDeploymentStatus", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "detailedDeploymentStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub detailed_deployment_status: Option<String>,
 
     /// List of deployment error stacks
-    #[serde(rename = "deploymentErrorStack", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deploymentErrorStack",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub deployment_error_stack: Option<Vec<String>>,
 
     /// List of deployment error types
-    #[serde(rename = "deploymentErrorTypes", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deploymentErrorTypes",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub deployment_error_types: Option<Vec<String>>,
 
     /// The reason for the current deployment status
-    #[serde(rename = "deploymentFailureCause", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "deploymentFailureCause",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub deployment_failure_cause: Option<String>,
 }
 
@@ -714,7 +755,10 @@ pub struct AuthorizeClientDeviceActionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientDeviceCredential {
     /// The client device's X.509 device certificate
-    #[serde(rename = "clientDeviceCertificate")]
+    #[serde(
+        rename = "clientDeviceCertificate",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub client_device_certificate: Option<String>,
 }
 
@@ -722,7 +766,7 @@ pub struct ClientDeviceCredential {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialDocument {
     /// The client device's MQTT credentials
-    #[serde(rename = "mqttCredential")]
+    #[serde(rename = "mqttCredential", skip_serializing_if = "Option::is_none")]
     pub mqtt_credential: Option<MqttCredential>,
 }
 
@@ -730,11 +774,11 @@ pub struct CredentialDocument {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MqttCredential {
     /// The client ID to used to connect
-    #[serde(rename = "clientId")]
+    #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
 
     /// The client certificate in pem format
-    #[serde(rename = "certificatePem")]
+    #[serde(rename = "certificatePem", skip_serializing_if = "Option::is_none")]
     pub certificate_pem: Option<String>,
 
     /// The username (unused)
@@ -806,9 +850,11 @@ pub enum FailureHandlingPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemResourceLimits {
     /// The maximum amount of RAM (in kilobytes) that this component's processes can use
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<u64>,
 
     /// The maximum amount of CPU time that this component's processes can use
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cpus: Option<f64>,
 }
 
@@ -816,15 +862,18 @@ pub struct SystemResourceLimits {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunWithInfo {
     /// The POSIX system user and, optionally, group to use to run this component on Linux
-    #[serde(rename = "posixUser")]
+    #[serde(rename = "posixUser", skip_serializing_if = "Option::is_none")]
     pub posix_user: Option<String>,
 
     /// The Windows user to use to run this component on Windows
-    #[serde(rename = "windowsUser")]
+    #[serde(rename = "windowsUser", skip_serializing_if = "Option::is_none")]
     pub windows_user: Option<String>,
 
     /// The system resource limits to apply to this component's processes
-    #[serde(rename = "systemResourceLimits")]
+    #[serde(
+        rename = "systemResourceLimits",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub system_resource_limits: Option<SystemResourceLimits>,
 }
 
@@ -832,35 +881,56 @@ pub struct RunWithInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLocalDeploymentRequest {
     /// The thing group name the deployment is targeting
-    #[serde(rename = "groupName")]
+    #[serde(rename = "groupName", skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
 
     /// Map of component name to version to add to the group's existing root components
-    #[serde(rename = "rootComponentVersionsToAdd")]
+    #[serde(
+        rename = "rootComponentVersionsToAdd",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub root_component_versions_to_add: Option<std::collections::HashMap<String, String>>,
 
     /// List of components that need to be removed from the group
-    #[serde(rename = "rootComponentsToRemove")]
+    #[serde(
+        rename = "rootComponentsToRemove",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub root_components_to_remove: Option<Vec<String>>,
 
     /// Map of component names to configuration
-    #[serde(rename = "componentToConfiguration")]
+    #[serde(
+        rename = "componentToConfiguration",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub component_to_configuration: Option<std::collections::HashMap<String, serde_json::Value>>,
 
     /// Map of component names to component run as info
-    #[serde(rename = "componentToRunWithInfo")]
+    #[serde(
+        rename = "componentToRunWithInfo",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub component_to_run_with_info: Option<std::collections::HashMap<String, RunWithInfo>>,
 
     /// All recipes files in this directory will be copied over to the Greengrass package store
-    #[serde(rename = "recipeDirectoryPath")]
+    #[serde(
+        rename = "recipeDirectoryPath",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub recipe_directory_path: Option<String>,
 
     /// All artifact files in this directory will be copied over to the Greengrass package store
-    #[serde(rename = "artifactsDirectoryPath")]
+    #[serde(
+        rename = "artifactsDirectoryPath",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub artifacts_directory_path: Option<String>,
 
     /// Deployment failure handling policy
-    #[serde(rename = "failureHandlingPolicy")]
+    #[serde(
+        rename = "failureHandlingPolicy",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub failure_handling_policy: Option<FailureHandlingPolicy>,
 }
 
@@ -868,7 +938,7 @@ pub struct CreateLocalDeploymentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLocalDeploymentResponse {
     /// The ID of the local deployment that the request created
-    #[serde(rename = "deploymentId")]
+    #[serde(rename = "deploymentId", skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
 }
 
@@ -876,7 +946,7 @@ pub struct CreateLocalDeploymentResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelLocalDeploymentRequest {
     /// The ID of the local deployment to cancel
-    #[serde(rename = "deploymentId")]
+    #[serde(rename = "deploymentId", skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<String>,
 }
 
@@ -884,6 +954,7 @@ pub struct CancelLocalDeploymentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CancelLocalDeploymentResponse {
     /// A message about the cancellation result
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -896,12 +967,12 @@ pub struct CancelLocalDeploymentResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretValue {
     /// The decrypted part of the protected secret information as a string
-    #[serde(rename = "secretString")]
+    #[serde(rename = "secretString", skip_serializing_if = "Option::is_none")]
     pub secret_string: Option<String>,
 
     /// The decrypted part of the protected secret information as binary data
     #[serde_as(as = "Option<Base64>")]
-    #[serde(rename = "secretBinary")]
+    #[serde(rename = "secretBinary", skip_serializing_if = "Option::is_none")]
     pub secret_binary: Option<Bytes>,
 }
 
@@ -913,14 +984,15 @@ pub struct GetSecretValueRequest {
     pub secret_id: String,
 
     /// The ID of the version to get
-    #[serde(rename = "versionId")]
+    #[serde(rename = "versionId", skip_serializing_if = "Option::is_none")]
     pub version_id: Option<String>,
 
     /// The staging label of the version to get
-    #[serde(rename = "versionStage")]
+    #[serde(rename = "versionStage", skip_serializing_if = "Option::is_none")]
     pub version_stage: Option<String>,
 
     /// Whether to fetch the latest secret from cloud when the request is handled
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh: Option<bool>,
 }
 
@@ -956,11 +1028,11 @@ pub struct ListNamedShadowsForThingRequest {
     pub thing_name: String,
 
     /// The token to retrieve the next set of results
-    #[serde(rename = "nextToken")]
+    #[serde(rename = "nextToken", skip_serializing_if = "Option::is_none")]
     pub next_token: Option<String>,
 
     /// The number of shadow names to return in each call
-    #[serde(rename = "pageSize")]
+    #[serde(rename = "pageSize", skip_serializing_if = "Option::is_none")]
     pub page_size: Option<u32>,
 }
 
@@ -971,10 +1043,11 @@ pub struct ListNamedShadowsForThingResponse {
     pub results: Vec<String>,
 
     /// The date and time that the response was generated
+    #[serde(with = "unix_timestamp_f64")]
     pub timestamp: chrono::DateTime<chrono::Utc>,
 
     /// The token value to use in paged requests to retrieve the next page
-    #[serde(rename = "nextToken")]
+    #[serde(rename = "nextToken", skip_serializing_if = "Option::is_none")]
     pub next_token: Option<String>,
 }
 
@@ -1006,7 +1079,7 @@ pub struct GetThingShadowRequest {
     pub thing_name: String,
 
     /// The name of the shadow
-    #[serde(rename = "shadowName")]
+    #[serde(rename = "shadowName", skip_serializing_if = "Option::is_none")]
     pub shadow_name: Option<String>,
 }
 
@@ -1028,7 +1101,7 @@ pub struct UpdateThingShadowRequest {
     pub thing_name: String,
 
     /// The name of the shadow
-    #[serde(rename = "shadowName")]
+    #[serde(rename = "shadowName", skip_serializing_if = "Option::is_none")]
     pub shadow_name: Option<String>,
 
     /// The request state document as a JSON encoded blob
@@ -1053,7 +1126,7 @@ pub struct DeleteThingShadowRequest {
     pub thing_name: String,
 
     /// The name of the shadow
-    #[serde(rename = "shadowName")]
+    #[serde(rename = "shadowName", skip_serializing_if = "Option::is_none")]
     pub shadow_name: Option<String>,
 }
 
@@ -1078,10 +1151,11 @@ pub struct DeferComponentUpdateRequest {
     pub deployment_id: String,
 
     /// The name of the component for which to defer updates
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 
     /// The amount of time in milliseconds for which to defer the update
-    #[serde(rename = "recheckAfterMs")]
+    #[serde(rename = "recheckAfterMs", skip_serializing_if = "Option::is_none")]
     pub recheck_after_ms: Option<u64>,
 }
 
@@ -1113,11 +1187,11 @@ pub struct PostComponentUpdateEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentUpdatePolicyEvents {
     /// An event that indicates that the Greengrass wants to update a component
-    #[serde(rename = "preUpdateEvent")]
+    #[serde(rename = "preUpdateEvent", skip_serializing_if = "Option::is_none")]
     pub pre_update_event: Option<PreComponentUpdateEvent>,
 
     /// An event that indicates that the nucleus updated a component
-    #[serde(rename = "postUpdateEvent")]
+    #[serde(rename = "postUpdateEvent", skip_serializing_if = "Option::is_none")]
     pub post_update_event: Option<PostComponentUpdateEvent>,
 }
 
@@ -1152,18 +1226,19 @@ pub struct CertificateOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateUpdate {
     /// The private key in pem format
-    #[serde(rename = "privateKey")]
+    #[serde(rename = "privateKey", skip_serializing_if = "Option::is_none")]
     pub private_key: Option<String>,
 
     /// The public key in pem format
-    #[serde(rename = "publicKey")]
+    #[serde(rename = "publicKey", skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
 
     /// The certificate in pem format
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
 
     /// List of CA certificates in pem format
-    #[serde(rename = "caCertificates")]
+    #[serde(rename = "caCertificates", skip_serializing_if = "Option::is_none")]
     pub ca_certificates: Option<Vec<String>>,
 }
 
@@ -1171,7 +1246,7 @@ pub struct CertificateUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateUpdateEvent {
     /// The information about the new certificate
-    #[serde(rename = "certificateUpdate")]
+    #[serde(rename = "certificateUpdate", skip_serializing_if = "Option::is_none")]
     pub certificate_update: Option<CertificateUpdate>,
 }
 
@@ -1254,11 +1329,17 @@ pub struct CreateDebugPasswordResponse {
     pub password_expiration: chrono::DateTime<chrono::Utc>,
 
     /// SHA256 hash of the certificate
-    #[serde(rename = "certificateSHA256Hash")]
+    #[serde(
+        rename = "certificateSHA256Hash",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub certificate_sha256_hash: Option<String>,
 
     /// SHA1 hash of the certificate
-    #[serde(rename = "certificateSHA1Hash")]
+    #[serde(
+        rename = "certificateSHA1Hash",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub certificate_sha1_hash: Option<String>,
 }
 

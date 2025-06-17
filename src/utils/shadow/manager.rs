@@ -3,7 +3,6 @@
 //! This module provides the `ShadowManager` which can manage multiple named shadows
 //! with pattern-based filtering and efficient wildcard MQTT subscriptions.
 
-use crate::model::ListNamedShadowsForThingRequest;
 use crate::utils::shadow::{
     error::{ShadowError, ShadowResult},
     persistence::FileBasedPersistence,
@@ -58,7 +57,7 @@ where
     T: ShadowState + Serialize + DeserializeOwned,
 {
     /// Create a new shadow manager
-    pub async fn new(
+    pub fn new(
         ipc_client: Arc<GreengrassCoreIPCClient>,
         thing_name: String,
         shadow_pattern: String,
@@ -86,34 +85,79 @@ where
 
         // Sync all shadows from cloud
         for shadow_name in &shadow_names {
-            if let Err(e) = self.get_shadow(shadow_name).await {
-                eprintln!("Warning: Failed to sync shadow '{}': {}", shadow_name, e);
+            if let Some(id) = shadow_name.strip_prefix(&self.shadow_pattern) {
+                if let Err(e) = self.get_shadow(id).await {
+                    eprintln!("Warning: Failed to sync shadow '{}': {}", shadow_name, e);
+                }
             }
         }
 
         Ok(())
     }
 
+    /// Initialize with seeding from existing shadows
+    /// This method reconciles persisted shadows with actual existing shadows
+    /// Returns a list of shadow names that were deleted while offline
+    pub async fn initialize_with_seed(
+        &self,
+        existing_shadow_names: Vec<String>,
+    ) -> ShadowResult<Vec<String>> {
+        // Discover existing shadows from cloud
+        let cloud_shadows = self.discover_shadows().await?;
+
+        // Find shadows that were deleted while offline (exist in seed but not in cloud)
+        let deleted_shadows: Vec<String> = existing_shadow_names
+            .iter()
+            .filter(|shadow_name| !cloud_shadows.contains(shadow_name))
+            .cloned()
+            .collect();
+
+        // Note: shadows_to_manage already contains all cloud shadows, including any that were seeded
+
+        // Load persistence for each shadow that exists
+        for shadow_name in &cloud_shadows {
+            self.add_shadow(shadow_name.clone()).await?;
+        }
+
+        // Sync all shadows from cloud
+        for shadow_name in &cloud_shadows {
+            if let Some(id) = shadow_name.strip_prefix(&self.shadow_pattern) {
+                if let Err(e) = self.get_shadow(id).await {
+                    eprintln!("Warning: Failed to sync shadow '{}': {}", shadow_name, e);
+                }
+            }
+        }
+
+        Ok(deleted_shadows)
+    }
+
     /// Discover shadows matching the pattern
     async fn discover_shadows(&self) -> ShadowResult<Vec<String>> {
-        let request = ListNamedShadowsForThingRequest {
-            thing_name: self.thing_name.clone(),
-            next_token: None,
-            page_size: Some(100),
-        };
+        let config = aws_config::load_from_env().await;
+        let iot_client = aws_sdk_iotdataplane::Client::new(&config);
 
-        let response = self
-            .ipc_client
-            .list_named_shadows_for_thing(request)
-            .await?;
+        let response = iot_client
+            .list_named_shadows_for_thing()
+            .thing_name(self.thing_name())
+            .page_size(100)
+            .send()
+            .await
+            .map_err(|e| ShadowError::AwsSdkError(e.into()))?;
 
         let matching_shadows = response
             .results
+            .unwrap_or_default()
             .into_iter()
             .filter(|name| name.starts_with(&self.shadow_pattern))
             .collect();
 
         Ok(matching_shadows)
+    }
+
+    /// Add a new shadow to be managed by ID
+    pub async fn add_shadow_by_id(&self, id: &str) -> ShadowResult<()> {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
+        self.add_shadow(shadow_name).await
     }
 
     /// Add a new shadow to be managed
@@ -131,19 +175,8 @@ where
     }
 
     /// Wait for the next delta change from any managed shadow
-    pub async fn wait_delta(&self) -> ShadowResult<(String, Option<T::Delta>)> {
-        // Subscribe to delta topic with wildcard
-        let delta_topic = format!(
-            "$aws/things/{}/shadow/name/{}+/update/delta",
-            self.thing_name, self.shadow_pattern
-        );
-
-        let request = SubscribeToIoTCoreRequest {
-            topic_name: delta_topic,
-            qos: QoS::AtLeastOnce,
-        };
-
-        let mut delta_stream = self.ipc_client.subscribe_to_iot_core(request).await?;
+    pub async fn wait_delta(&self) -> ShadowResult<(String, T, Option<T::Delta>)> {
+        let mut delta_stream = self.create_delta_subscription().await?;
 
         // Wait for the next delta message
         while let Some(message) = delta_stream.next().await {
@@ -156,14 +189,10 @@ where
     /// Create a delta subscription for monitoring changes
     /// Returns a StreamOperation that can be used to monitor delta changes
     pub async fn create_delta_subscription(&self) -> ShadowResult<StreamOperation<IoTCoreMessage>> {
-        // Subscribe to delta topic with wildcard
-        let delta_topic = format!(
-            "$aws/things/{}/shadow/name/{}+/update/delta",
-            self.thing_name, self.shadow_pattern
-        );
+        let topics = ShadowTopics::new_named(&self.thing_name, "+");
 
         let request = SubscribeToIoTCoreRequest {
-            topic_name: delta_topic,
+            topic_name: topics.delta,
             qos: QoS::AtLeastOnce,
         };
 
@@ -172,11 +201,53 @@ where
         Ok(delta_stream)
     }
 
-    /// Parse a delta message and extract shadow name and state
+    /// Create a deletion subscription for monitoring shadow deletions
+    /// Returns a StreamOperation that can be used to monitor deletion events
+    pub async fn create_deletion_subscription(
+        &self,
+    ) -> ShadowResult<StreamOperation<IoTCoreMessage>> {
+        let topics = ShadowTopics::new_named(&self.thing_name, "+");
+
+        let request = SubscribeToIoTCoreRequest {
+            topic_name: topics.delete_accepted,
+            qos: QoS::AtLeastOnce,
+        };
+
+        let delete_stream = self.ipc_client.subscribe_to_iot_core(request).await?;
+
+        Ok(delete_stream)
+    }
+
+    /// Parse a deletion message and handle shadow cleanup
+    /// Returns the shadow ID (with pattern prefix stripped) if successful
+    pub async fn handle_deletion_message(
+        &self,
+        message: &IoTCoreMessage,
+    ) -> ShadowResult<Option<String>> {
+        let topic_parts: Vec<&str> = message.message.topic_name.split('/').collect();
+
+        if topic_parts.len() >= 6 {
+            let shadow_name = topic_parts[5];
+
+            // Check if this shadow matches our pattern
+            if let Some(shadow_id) = shadow_name.strip_prefix(&self.shadow_pattern) {
+                let mut shadows = self.shadows.write().await;
+                if let Some(persistence) = shadows.remove(shadow_name) {
+                    persistence.delete().await?;
+                }
+                return Ok(Some(shadow_id.to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Parse a delta message, apply it to state, and return both full state and delta
+    /// Returns the shadow ID, full updated state, and delta state
     pub async fn parse_delta_message(
         &self,
         msg: &IoTCoreMessage,
-    ) -> ShadowResult<(String, Option<T::Delta>)> {
+    ) -> ShadowResult<(String, T, Option<T::Delta>)> {
         let topic = &msg.message.topic_name;
         let payload = &msg.message.payload;
 
@@ -187,29 +258,60 @@ where
 
         if let Some(middle) = topic.strip_prefix(&expected_prefix) {
             if let Some(shadow_name) = middle.strip_suffix(expected_suffix) {
-                if shadow_name.starts_with(&self.shadow_pattern) {
+                if let Some(shadow_id) = shadow_name.strip_prefix(&self.shadow_pattern) {
                     // Parse delta response
                     let delta_response: DeltaResponse<T::Delta> =
                         serde_json::from_slice(payload).map_err(ShadowError::SerializationError)?;
 
-                    return Ok((shadow_name.to_string(), delta_response.state));
+                    // Get or create persistence for this shadow
+                    if self.shadows.read().await.get(shadow_name).is_none() {
+                        // Add shadow if not tracked
+                        self.add_shadow(shadow_name.to_string()).await?;
+                    } else {
+                    }
+
+                    let shadows = self.shadows.read().await;
+                    let persistence = shadows.get(shadow_name).unwrap();
+
+                    // Load existing state or use default
+                    let mut state = match persistence.load().await? {
+                        Some(state) => state,
+                        None => {
+                            let default_state = T::default();
+                            persistence.save(&default_state).await?;
+                            default_state
+                        }
+                    };
+
+                    // Apply delta if present
+                    if let Some(ref delta) = delta_response.state {
+                        state.apply_patch(delta.clone());
+
+                        // Report updated state
+                        self.report(&shadow_name, state.clone().into()).await?;
+
+                        // Persist updated state
+                        persistence.save(&state).await?;
+                    }
+
+                    return Ok((shadow_id.to_string(), state, delta_response.state));
                 }
             }
         }
-
         Err(ShadowError::InvalidDocument(
             "Failed to parse delta message".to_string(),
         ))
     }
 
-    /// Get the current state of a specific shadow
-    pub async fn get_shadow(&self, shadow_name: &str) -> ShadowResult<T> {
+    /// Get the current state of a specific shadow by ID
+    pub async fn get_shadow(&self, id: &str) -> ShadowResult<T> {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
         let shadows = self.shadows.read().await;
-        let persistence = shadows.get(shadow_name).ok_or_else(|| {
-            ShadowError::InvalidDocument(format!("Shadow '{}' not managed", shadow_name))
+        let persistence = shadows.get(&shadow_name).ok_or_else(|| {
+            ShadowError::InvalidDocument(format!("Shadow ID '{}' not managed", id))
         })?;
 
-        let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
+        let topics = ShadowTopics::new_named(&self.thing_name, &shadow_name);
 
         // Create subscriptions for get responses
         let (accepted_stream, rejected_stream) = futures::try_join!(
@@ -229,7 +331,7 @@ where
         if let Some(delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             persistence.save(&state).await?;
-            self.report(shadow_name, state.clone().into()).await?;
+            self.report(&shadow_name, state.clone().into()).await?;
         }
 
         Ok(state)
@@ -269,15 +371,15 @@ where
             .await
     }
 
-    /// Update desired state for a specific shadow
-    pub async fn update<F: FnOnce(&T, &mut T::Reported)>(
-        &self,
-        shadow_name: &str,
-        f: F,
-    ) -> ShadowResult<T> {
+    /// Update desired state for a specific shadow by ID
+    pub async fn update<F>(&self, id: &str, f: F) -> ShadowResult<T>
+    where
+        F: FnOnce(&T, &mut T::Reported),
+    {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
         let shadows = self.shadows.read().await;
-        let persistence = shadows.get(shadow_name).ok_or_else(|| {
-            ShadowError::InvalidDocument(format!("Shadow '{}' not managed", shadow_name))
+        let persistence = shadows.get(&shadow_name).ok_or_else(|| {
+            ShadowError::InvalidDocument(format!("Shadow ID '{}' not managed", id))
         })?;
         let mut update = T::Reported::default();
 
@@ -285,7 +387,7 @@ where
 
         f(&state, &mut update);
 
-        let response = self.report(shadow_name, update).await?;
+        let response = self.report(&shadow_name, update).await?;
 
         if let Some(delta) = response.delta {
             state.apply_patch(delta.clone());
@@ -296,50 +398,72 @@ where
         Ok(state)
     }
 
-    /// Delete a specific shadow
-    pub async fn delete_shadow(&self, shadow_name: &str) -> ShadowResult<()> {
-        let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
+    /// Delete a specific shadow by ID
+    pub async fn delete_shadow(&self, id: &str) -> ShadowResult<()> {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
+        let topics = ShadowTopics::new_named(&self.thing_name, &shadow_name);
 
-        // Create subscriptions for delete responses
-        let (accepted_stream, rejected_stream) = futures::try_join!(
-            self.subscribe_to_topic(&topics.delete_accepted),
-            self.subscribe_to_topic(&topics.delete_rejected)
-        )?;
+        // Create subscription for delete rejected responses only
+        // (accepted responses will be handled by the deletion subscription)
+        let mut rejected_stream = self.subscribe_to_topic(&topics.delete_rejected).await?;
 
         // Publish delete request
         self.publish_to_topic(&topics.delete, b"").await?;
 
-        // Wait for response
-        self.wait_for_delete_response(accepted_stream, rejected_stream)
-            .await?;
+        // Wait for either success (via timeout) or rejection
+        let result = timeout(self.operation_timeout, async {
+            if let Some(rejected_msg) = rejected_stream.next().await {
+                let error_response: ErrorResponse =
+                    serde_json::from_slice(&rejected_msg.message.payload)?;
+                return Err(ShadowError::ShadowRejected {
+                    code: error_response.code,
+                    message: error_response.message.to_string(),
+                });
+            }
+            Ok(())
+        })
+        .await;
 
-        // Remove from local management
-        let mut shadows = self.shadows.write().await;
-        if let Some(persistence) = shadows.remove(shadow_name) {
-            persistence.delete().await?;
+        rejected_stream.close().await?;
+
+        match result {
+            Ok(Ok(())) => Ok(()), // Success - deletion subscription will handle cleanup
+            Ok(Err(e)) => Err(e), // Rejection
+            Err(_) => Ok(()),     // Timeout means success (no rejection received)
         }
-
-        Ok(())
     }
 
-    /// Get a list of all currently managed shadow names
-    pub async fn get_managed_shadows(&self) -> Vec<String> {
+    /// Get managed shadow IDs (strips the shadow pattern prefix)
+    pub async fn get_managed_ids(&self) -> Vec<String> {
         let shadows = self.shadows.read().await;
-        shadows.keys().cloned().collect()
+        shadows
+            .keys()
+            .filter_map(|shadow_name| shadow_name.strip_prefix(&self.shadow_pattern))
+            .map(|s| s.to_string())
+            .collect()
     }
 
-    /// Get the current state of all managed shadows
+    /// Check if an ID is currently managed (alias for is_shadow_managed)
+    pub async fn is_id_managed(&self, id: &str) -> bool {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
+        let shadows = self.shadows.read().await;
+        shadows.contains_key(&shadow_name)
+    }
+
+    /// Get the current state of all managed shadows (returns map of ID -> state)
     pub async fn get_all_shadows(&self) -> ShadowResult<HashMap<String, Option<T>>> {
         let shadows = self.shadows.read().await;
         let mut result = HashMap::new();
 
         for (shadow_name, persistence) in shadows.iter() {
-            let state = if let Some(reported) = persistence.load().await? {
-                Some(reported)
-            } else {
-                None
-            };
-            result.insert(shadow_name.clone(), state);
+            if let Some(id) = shadow_name.strip_prefix(&self.shadow_pattern) {
+                let state = if let Some(reported) = persistence.load().await? {
+                    Some(reported)
+                } else {
+                    None
+                };
+                result.insert(id.to_string(), state);
+            }
         }
 
         Ok(result)
@@ -473,37 +597,6 @@ where
 
         match result {
             Ok(Ok(state)) => Ok(state),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(ShadowError::Timeout),
-        }
-    }
-
-    async fn wait_for_delete_response(
-        &self,
-        mut accepted_stream: StreamOperation<IoTCoreMessage>,
-        mut rejected_stream: StreamOperation<IoTCoreMessage>,
-    ) -> ShadowResult<()> {
-        let result = timeout(self.operation_timeout, async {
-            tokio::select! {
-                Some(_message) = accepted_stream.next() => {
-                    Ok(())
-                }
-                Some(msg) = rejected_stream.next() => {
-                    let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
-
-                    Err(ShadowError::ShadowRejected {
-                        code: error_response.code,
-                        message: error_response.message.to_string(),
-                    })
-                }
-            }
-        })
-        .await;
-
-        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
-
-        match result {
-            Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(ShadowError::Timeout),
         }

@@ -7,13 +7,13 @@ use std::fmt;
 pub enum ShadowError {
     /// IPC communication error
     IpcError(crate::Error),
-    
+
     /// JSON serialization/deserialization error
     SerializationError(serde_json::Error),
-    
+
     /// File I/O error during persistence operations
     IoError(std::io::Error),
-    
+
     /// Shadow operation was rejected by AWS IoT
     ShadowRejected {
         /// Error code from AWS IoT
@@ -21,27 +21,28 @@ pub enum ShadowError {
         /// Error message from AWS IoT
         message: String,
     },
-    
+
     /// Operation timed out waiting for response
     Timeout,
-    
+
     /// Invalid shadow document format
     InvalidDocument(String),
-    
+
     /// Shadow not found
     ShadowNotFound,
-    
+
+    /// AWS IoT SDK error
+    #[cfg(feature = "shadow-manager")]
+    AwsSdkError(aws_sdk_iotdataplane::Error),
+
     /// Invalid topic format
     InvalidTopic(String),
-    
+
     /// Subscription failed
     SubscriptionFailed(String),
-    
+
     /// Client token mismatch
-    ClientTokenMismatch {
-        expected: String,
-        received: String,
-    },
+    ClientTokenMismatch { expected: String, received: String },
 }
 
 impl fmt::Display for ShadowError {
@@ -55,11 +56,17 @@ impl fmt::Display for ShadowError {
             }
             ShadowError::Timeout => write!(f, "Operation timeout"),
             ShadowError::InvalidDocument(msg) => write!(f, "Invalid shadow document: {}", msg),
+            #[cfg(feature = "shadow-manager")]
+            ShadowError::AwsSdkError(msg) => write!(f, "AWS SDK error: {}", msg),
             ShadowError::ShadowNotFound => write!(f, "Shadow not found"),
             ShadowError::InvalidTopic(topic) => write!(f, "Invalid topic format: {}", topic),
             ShadowError::SubscriptionFailed(msg) => write!(f, "Subscription failed: {}", msg),
             ShadowError::ClientTokenMismatch { expected, received } => {
-                write!(f, "Client token mismatch: expected '{}', received '{}'", expected, received)
+                write!(
+                    f,
+                    "Client token mismatch: expected '{}', received '{}'",
+                    expected, received
+                )
             }
         }
     }
