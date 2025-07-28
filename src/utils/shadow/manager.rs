@@ -288,7 +288,8 @@ where
                         state.apply_patch(delta.clone());
 
                         // Report updated state
-                        self.report(&shadow_name, state.clone().into()).await?;
+                        self.report(&shadow_name, state.clone().into_reported())
+                            .await?;
 
                         // Persist updated state
                         persistence.save(&state).await?;
@@ -331,7 +332,8 @@ where
         if let Some(delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             persistence.save(&state).await?;
-            self.report(&shadow_name, state.clone().into()).await?;
+            self.report(&shadow_name, state.clone().into_reported())
+                .await?;
         }
 
         Ok(state)
