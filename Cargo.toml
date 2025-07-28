@@ -34,7 +34,9 @@ aws-config = { version = "1.1.7", features = [
 ], optional = true }
 aws-sdk-iotdataplane = { version = "1.72.0", optional = true }
 
-rustot = { git = "ssh://git@github.com/FactbirdHQ/rustot", rev = "505fcdb" }
+rustot = { git = "ssh://git@github.com/FactbirdHQ/rustot", rev = "b147c17", features = [
+    "std",
+] }
 
 
 [dev-dependencies]

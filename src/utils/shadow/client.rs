@@ -115,38 +115,56 @@ where
         if let Some(delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             self.persistence.save(&state).await?;
-            self.report(state.clone().into()).await?;
+            self.report(state.clone().into_reported()).await?;
         }
 
         Ok(state)
     }
 
+    /// Subscribe to delta topic
+    pub async fn create_delta_subscription(&self) -> ShadowResult<StreamOperation<IoTCoreMessage>> {
+        self.subscribe_to_topic(&self.topics.delta).await
+    }
+
+    /// Parse a delta message, apply it to state, and return both full state and delta
+    /// Returns the full updated state, and delta state
+    pub async fn parse_delta_message(
+        &self,
+        msg: &IoTCoreMessage,
+    ) -> ShadowResult<(T, Option<T::Delta>)> {
+        let topic = &msg.message.topic_name;
+        let payload = &msg.message.payload;
+
+        if topic == &self.topics.delta {
+            let delta_response: DeltaResponse<T::Delta> = serde_json::from_slice(payload)?;
+
+            // Load current state and apply delta
+            let mut state = self.persistence.load().await?.unwrap_or_default();
+            if let Some(ref delta) = delta_response.state {
+                // Apply the delta using rustot's patch mechanism
+                state.apply_patch(delta.clone());
+
+                self.report(state.clone().into_reported()).await?;
+
+                // Save updated state
+                self.persistence.save(&state).await?;
+            }
+            return Ok((state, delta_response.state));
+        }
+
+        Err(ShadowError::InvalidDocument(
+            "Failed to parse delta message".to_string(),
+        ))
+    }
+
     /// Wait for delta changes from the cloud
     pub async fn wait_delta(&self) -> ShadowResult<(T, Option<T::Delta>)> {
         // Subscribe to delta topic
-        let mut delta_stream = self.subscribe_to_delta().await?;
+        let mut delta_stream = self.create_delta_subscription().await?;
 
-        // Wait for delta message
-        while let Some(msg) = delta_stream.next().await {
-            let topic = &msg.message.topic_name;
-            let payload = &msg.message.payload;
-
-            if topic == &self.topics.delta {
-                let delta_response: DeltaResponse<T::Delta> = serde_json::from_slice(payload)?;
-
-                // Load current state and apply delta
-                let mut state = self.persistence.load().await?.unwrap_or_default();
-                if let Some(ref delta) = delta_response.state {
-                    // Apply the delta using rustot's patch mechanism
-                    state.apply_patch(delta.clone());
-
-                    self.report(state.clone().into()).await?;
-
-                    // Save updated state
-                    self.persistence.save(&state).await?;
-                }
-                return Ok((state, delta_response.state));
-            }
+        // Wait for the next delta message
+        while let Some(message) = delta_stream.next().await {
+            return self.parse_delta_message(&message).await;
         }
 
         Err(ShadowError::Timeout)
@@ -257,11 +275,6 @@ where
             self.subscribe_to_topic(&self.topics.delete_accepted),
             self.subscribe_to_topic(&self.topics.delete_rejected)
         )?)
-    }
-
-    /// Subscribe to delta topic
-    async fn subscribe_to_delta(&self) -> ShadowResult<StreamOperation<IoTCoreMessage>> {
-        self.subscribe_to_topic(&self.topics.delta).await
     }
 
     /// Subscribe to a specific topic
