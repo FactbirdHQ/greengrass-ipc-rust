@@ -177,8 +177,9 @@ where
     ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
         let client_token = self.generate_client_token();
 
-        let request: Request<'_, T::Reported> = Request {
+        let request: Request<'_, T, T::Reported> = Request {
             state: RequestState {
+                desired: None,
                 reported: Some(reported),
             },
             client_token: Some(&client_token),
