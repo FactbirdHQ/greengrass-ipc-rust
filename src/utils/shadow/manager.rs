@@ -493,7 +493,6 @@ where
     }
 
     // Helper methods (similar to ShadowClient)
-
     async fn subscribe_to_topic(
         &self,
         topic: &str,
@@ -528,7 +527,6 @@ where
     }
 
     // Response waiting methods (similar to ShadowClient)
-
     async fn wait_for_get_response(
         &self,
         mut accepted_stream: StreamOperation<IoTCoreMessage>,
@@ -550,8 +548,6 @@ where
                 }
             }
         }).await;
-
-        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
 
         match result {
             Ok(Ok(response)) => Ok(response),
@@ -595,8 +591,6 @@ where
                 }
             }
         }).await;
-
-        futures::try_join!(accepted_stream.close(), rejected_stream.close())?;
 
         match result {
             Ok(Ok(state)) => Ok(state),

@@ -433,8 +433,8 @@ pub struct ComponentDetails {
     pub component_name: String,
 
     /// The version of the component
-    #[serde(rename = "version")]
-    pub version: String,
+    #[serde(rename = "version", skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 
     /// The state of the component
     #[serde(rename = "state")]

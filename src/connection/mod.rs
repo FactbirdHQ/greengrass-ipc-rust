@@ -414,17 +414,29 @@ impl Connection {
                 .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
                 .with_header(crate::event_stream::Header::StreamId(stream_id))
                 .with_header(crate::event_stream::Header::MessageFlags(2)) // TERMINATE_STREAM = 2
-                .with_header(crate::event_stream::Header::ContentType("application/json".to_string()));
+                .with_header(crate::event_stream::Header::ContentType(
+                    "application/json".to_string(),
+                ));
 
             // Try to send the terminate message, but don't fail if it doesn't work
             // (stream might already be closed by the server)
             if let Err(e) = self.send_message(&terminate_message).await {
-                log::debug!("Failed to send TERMINATE_STREAM message for operation {}: {}", operation_id, e);
+                log::debug!(
+                    "Failed to send TERMINATE_STREAM message for operation {}: {}",
+                    operation_id,
+                    e
+                );
             } else {
-                log::debug!("Sent TERMINATE_STREAM message for operation {}", operation_id);
+                log::debug!(
+                    "Sent TERMINATE_STREAM message for operation {}",
+                    operation_id
+                );
             }
         } else {
-            log::debug!("No stream ID found for operation {}, cannot send TERMINATE_STREAM", operation_id);
+            log::debug!(
+                "No stream ID found for operation {}, cannot send TERMINATE_STREAM",
+                operation_id
+            );
         }
 
         Ok(())

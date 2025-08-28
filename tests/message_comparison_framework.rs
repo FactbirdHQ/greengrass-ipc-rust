@@ -331,7 +331,7 @@ fn create_python_test_script() -> io::Result<PathBuf> {
         .unwrap()
         .join("python")
         .join("message_encoder.py");
-    
+
     // Ensure the script is executable on Unix platforms
     #[cfg(unix)]
     {

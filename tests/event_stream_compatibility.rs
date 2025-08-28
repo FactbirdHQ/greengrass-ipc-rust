@@ -12,12 +12,14 @@ fn test_connect_message_format() {
         .with_payload(r#"{"authToken": "test-token"}"#.as_bytes());
 
     // Verify the message can be encoded without errors
-    let encoded = connect_message.encode().expect("Should encode successfully");
+    let encoded = connect_message
+        .encode()
+        .expect("Should encode successfully");
     assert!(encoded.len() > 0, "Encoded message should not be empty");
 
     // Verify the message can be decoded back
     let decoded = EventStreamMessage::decode(&encoded).expect("Should decode successfully");
-    
+
     // Verify all required headers are present
     assert!(decoded.get_header(":message-type").is_some());
     assert!(decoded.get_header(":message-flags").is_some());
@@ -33,14 +35,17 @@ fn test_connect_message_format() {
 
     // Verify payload is preserved
     let payload_str = String::from_utf8_lossy(&decoded.payload);
-    assert!(payload_str.contains("authToken"), "Payload should contain authToken");
+    assert!(
+        payload_str.contains("authToken"),
+        "Payload should contain authToken"
+    );
 }
 
 #[test]
 fn test_typed_headers() {
     // Test that typed headers work correctly
     let mut message = EventStreamMessage::new();
-    
+
     // Add typed headers
     message = message
         .with_header(Header::Version("1.0.0".to_string()))
@@ -87,7 +92,7 @@ fn test_message_crc_validation() {
         .with_payload(b"test payload".to_vec());
 
     let encoded = message.encode().expect("Should encode successfully");
-    
+
     // Valid message should decode without errors
     EventStreamMessage::decode(&encoded).expect("Valid message should decode");
 
