@@ -374,7 +374,67 @@ where
             .await
     }
 
+    /// Report state for a specific shadow
+    async fn desired(
+        &self,
+        shadow_name: &str,
+        desired: T,
+        reported: T::Reported,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let client_token = self.generate_client_token();
+
+        let request: Request<'_, T, T::Reported> = Request {
+            state: RequestState {
+                desired: Some(desired),
+                reported: Some(reported),
+            },
+            client_token: Some(&client_token),
+            version: None,
+        };
+
+        let topics = ShadowTopics::new_named(&self.thing_name, shadow_name);
+
+        // Create subscriptions for update responses
+        let (accepted_stream, rejected_stream) = futures::try_join!(
+            self.subscribe_to_topic(&topics.update_accepted),
+            self.subscribe_to_topic(&topics.update_rejected)
+        )?;
+
+        // Serialize and publish update request
+        let payload = serde_json::to_vec(&request)?;
+
+        self.publish_to_topic(&topics.update, &payload).await?;
+
+        // Wait for response
+        self.wait_for_update_response(accepted_stream, rejected_stream, Some(&client_token))
+            .await
+    }
+
     /// Update desired state for a specific shadow by ID
+    pub async fn update_desired<F>(&self, id: &str, f: F) -> ShadowResult<()>
+    where
+        F: FnOnce(&mut T, &mut T::Reported),
+    {
+        let shadow_name = format!("{}{}", self.shadow_pattern, id);
+        let shadows = self.shadows.read().await;
+        let persistence = shadows.get(&shadow_name).ok_or_else(|| {
+            ShadowError::InvalidDocument(format!("Shadow ID '{}' not managed", id))
+        })?;
+
+        let mut update = T::Reported::default();
+
+        let mut state = persistence.load().await?.unwrap_or_default();
+
+        f(&mut state, &mut update);
+
+        self.desired(&shadow_name, state.clone(), update).await?;
+
+        persistence.save(&state).await?;
+
+        Ok(())
+    }
+
+    /// Update reported state for a specific shadow by ID
     pub async fn update<F>(&self, id: &str, f: F) -> ShadowResult<T>
     where
         F: FnOnce(&T, &mut T::Reported),
