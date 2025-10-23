@@ -221,6 +221,53 @@ where
         Ok(state)
     }
 
+    /// Report state for a specific shadow
+    async fn desired(
+        &self,
+        desired: T,
+        reported: T::Reported,
+    ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        let client_token = self.generate_client_token();
+
+        let request: Request<'_, T, T::Reported> = Request {
+            state: RequestState {
+                desired: Some(desired),
+                reported: Some(reported),
+            },
+            client_token: Some(&client_token),
+            version: None,
+        };
+
+        // Create subscriptions for update responses
+        let (accepted_stream, rejected_stream) = self.subscribe_to_update_responses().await?;
+
+        // Serialize and publish update request
+        let payload = serde_json::to_vec(&request)?;
+        let client_token = request.client_token;
+
+        self.publish_to_topic(&self.topics.update, payload).await?;
+
+        // Wait for response
+        self.wait_for_update_response(accepted_stream, rejected_stream, client_token)
+            .await
+    }
+
+    /// Update desired state for a specific shadow by ID
+    pub async fn update_desired<F>(&self, f: F) -> ShadowResult<()>
+    where
+        F: FnOnce(&mut T, &mut T::Reported),
+    {
+        let mut update = T::Reported::default();
+        let mut state = self.persistence.load().await?.unwrap_or_default();
+        f(&mut state, &mut update);
+
+        self.desired(state.clone(), update).await?;
+
+        self.persistence.save(&state).await?;
+
+        Ok(())
+    }
+
     /// Delete the shadow from AWS IoT
     pub async fn delete_shadow(&self) -> ShadowResult<()> {
         // Create subscriptions for delete responses
