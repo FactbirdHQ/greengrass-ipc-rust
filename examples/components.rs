@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for (idx, component) in components.iter().enumerate() {
                         println!("\nComponent #{}", idx + 1);
                         println!("  Name: {}", component.component_name);
-                        println!("  Version: {}", component.version);
+                        println!("  Version: {:?}", component.version);
                         println!("  State: {}", format_state(component.state));
 
                         if let Some(config) = &component.configuration {
@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let details = &details_response.component_details;
                                 println!("Detailed component information retrieved successfully:");
                                 println!("  Name: {}", details.component_name);
-                                println!("  Version: {}", details.version);
+                                println!("  Version: {:?}", details.version);
                                 println!("  State: {}", format_state(details.state));
 
                                 if let Some(config) = &details.configuration {
@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let details = &details_response.component_details;
                                 println!("Detailed component information retrieved successfully:");
                                 println!("  Name: {}", details.component_name);
-                                println!("  Version: {}", details.version);
+                                println!("  Version: {:?}", details.version);
                                 println!("  State: {}", format_state(details.state));
 
                                 if let Some(config) = &details.configuration {

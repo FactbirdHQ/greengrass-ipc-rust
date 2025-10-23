@@ -382,6 +382,11 @@ where
                 Some(msg) = rejected_stream.next() => {
                     let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
 
+                    match error_response.code {
+                        404 => return Err(ShadowError::ShadowNotFound),
+                        _ => {}
+                    }
+
                     Err(ShadowError::ShadowRejected {
                         code: error_response.code,
                         message: error_response.message.to_string(),
