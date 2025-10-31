@@ -98,7 +98,7 @@ where
     }
 
     /// Get the current shadow state from AWS IoT
-    pub async fn get_shadow(&self) -> ShadowResult<T> {
+    pub async fn get_shadow(&self) -> ShadowResult<(T, Option<T::Delta>)> {
         // Create subscriptions for get responses
         let (accepted_stream, rejected_stream) = self.subscribe_to_get_responses().await?;
 
@@ -112,13 +112,13 @@ where
 
         // Update local persistence if we got a shadow
         let mut state = self.persistence.load().await?.unwrap_or_default();
-        if let Some(delta) = delta_state.delta {
+        if let Some(ref delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             self.persistence.save(&state).await?;
             self.report(state.clone().into_reported()).await?;
         }
 
-        Ok(state)
+        Ok((state, delta_state.delta))
     }
 
     /// Subscribe to delta topic

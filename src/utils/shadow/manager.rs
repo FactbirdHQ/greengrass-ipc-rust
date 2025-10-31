@@ -119,15 +119,6 @@ where
             self.add_shadow(shadow_name.clone()).await?;
         }
 
-        // Sync all shadows from cloud
-        for shadow_name in &cloud_shadows {
-            if let Some(id) = shadow_name.strip_prefix(&self.shadow_pattern) {
-                if let Err(e) = self.get_shadow(id).await {
-                    eprintln!("Warning: Failed to sync shadow '{}': {}", shadow_name, e);
-                }
-            }
-        }
-
         Ok(deleted_shadows)
     }
 
@@ -305,7 +296,7 @@ where
     }
 
     /// Get the current state of a specific shadow by ID
-    pub async fn get_shadow(&self, id: &str) -> ShadowResult<T> {
+    pub async fn get_shadow(&self, id: &str) -> ShadowResult<(T, Option<T::Delta>)> {
         let shadow_name = format!("{}{}", self.shadow_pattern, id);
         let shadows = self.shadows.read().await;
         let persistence = shadows.get(&shadow_name).ok_or_else(|| {
@@ -329,14 +320,14 @@ where
             .await?;
 
         let mut state = persistence.load().await?.unwrap_or_default();
-        if let Some(delta) = delta_state.delta {
+        if let Some(ref delta) = delta_state.delta {
             state.apply_patch(delta.clone());
             persistence.save(&state).await?;
             self.report(&shadow_name, state.clone().into_reported())
                 .await?;
         }
 
-        Ok(state)
+        Ok((state, delta_state.delta))
     }
 
     /// Report state for a specific shadow
@@ -589,16 +580,42 @@ where
     // Response waiting methods (similar to ShadowClient)
     async fn wait_for_get_response(
         &self,
-        mut accepted_stream: StreamOperation<IoTCoreMessage>,
-        mut rejected_stream: StreamOperation<IoTCoreMessage>,
+        accepted_stream: StreamOperation<IoTCoreMessage>,
+        rejected_stream: StreamOperation<IoTCoreMessage>,
     ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        // Use a struct to ensure cleanup happens even if this future is cancelled
+        struct StreamGuard {
+            accepted: Option<StreamOperation<IoTCoreMessage>>,
+            rejected: Option<StreamOperation<IoTCoreMessage>>,
+        }
+
+        impl Drop for StreamGuard {
+            fn drop(&mut self) {
+                if let Some(accepted) = self.accepted.take() {
+                    tokio::spawn(async move {
+                        let _ = accepted.close().await;
+                    });
+                }
+                if let Some(rejected) = self.rejected.take() {
+                    tokio::spawn(async move {
+                        let _ = rejected.close().await;
+                    });
+                }
+            }
+        }
+
+        let mut guard = StreamGuard {
+            accepted: Some(accepted_stream),
+            rejected: Some(rejected_stream),
+        };
+
         let result = timeout(self.operation_timeout, async {
             tokio::select! {
-                Some(msg) = accepted_stream.next() => {
+                Some(msg) = guard.accepted.as_mut().unwrap().next() => {
                     let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
                     Ok(response.state)
                 }
-                Some(msg) = rejected_stream.next() => {
+                Some(msg) = guard.rejected.as_mut().unwrap().next() => {
                     let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
 
                     match error_response.code {
@@ -614,6 +631,15 @@ where
             }
         }).await;
 
+        // Explicitly close streams - this will be executed whether timeout succeeds or fails
+        // AND the guard Drop will also ensure cleanup if the future is cancelled externally
+        if let Some(accepted) = guard.accepted.take() {
+            let _ = accepted.close().await;
+        }
+        if let Some(rejected) = guard.rejected.take() {
+            let _ = rejected.close().await;
+        }
+
         match result {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(e)) => Err(e),
@@ -623,14 +649,40 @@ where
 
     async fn wait_for_update_response(
         &self,
-        mut accepted_stream: StreamOperation<IoTCoreMessage>,
-        mut rejected_stream: StreamOperation<IoTCoreMessage>,
+        accepted_stream: StreamOperation<IoTCoreMessage>,
+        rejected_stream: StreamOperation<IoTCoreMessage>,
         client_token: Option<&str>,
     ) -> ShadowResult<DeltaState<T::Delta, T::Delta>> {
+        // Use a struct to ensure cleanup happens even if this future is cancelled
+        struct StreamGuard {
+            accepted: Option<StreamOperation<IoTCoreMessage>>,
+            rejected: Option<StreamOperation<IoTCoreMessage>>,
+        }
+
+        impl Drop for StreamGuard {
+            fn drop(&mut self) {
+                if let Some(accepted) = self.accepted.take() {
+                    tokio::spawn(async move {
+                        let _ = accepted.close().await;
+                    });
+                }
+                if let Some(rejected) = self.rejected.take() {
+                    tokio::spawn(async move {
+                        let _ = rejected.close().await;
+                    });
+                }
+            }
+        }
+
+        let mut guard = StreamGuard {
+            accepted: Some(accepted_stream),
+            rejected: Some(rejected_stream),
+        };
+
         let result = timeout(self.operation_timeout, async {
             loop {
                 tokio::select! {
-                    Some(msg) = accepted_stream.next() => {
+                    Some(msg) = guard.accepted.as_mut().unwrap().next() => {
                         let response: AcceptedResponse<T::Delta, T::Delta> = serde_json::from_slice(&msg.message.payload)?;
 
                         // Verify client token if present
@@ -640,7 +692,7 @@ where
 
                         return Ok(response.state);
                     }
-                    Some(msg) = rejected_stream.next() => {
+                    Some(msg) = guard.rejected.as_mut().unwrap().next() => {
                         let error_response: ErrorResponse = serde_json::from_slice(&msg.message.payload)?;
 
                         // Verify client token if present
@@ -656,6 +708,15 @@ where
                 }
             }
         }).await;
+
+        // Explicitly close streams - this will be executed whether timeout succeeds or fails
+        // AND the guard Drop will also ensure cleanup if the future is cancelled externally
+        if let Some(accepted) = guard.accepted.take() {
+            let _ = accepted.close().await;
+        }
+        if let Some(rejected) = guard.rejected.take() {
+            let _ = rejected.close().await;
+        }
 
         match result {
             Ok(Ok(state)) => Ok(state),
