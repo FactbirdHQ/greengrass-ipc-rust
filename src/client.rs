@@ -798,6 +798,13 @@ impl<Resp> StreamOperation<Resp> {
         }
     }
 
+    /// Receive the next message from the stream.
+    ///
+    /// Returns `None` if the stream is closed.
+    pub async fn recv(&mut self) -> Option<Resp> {
+        self.message_receiver.recv().await
+    }
+
     pub async fn close(self) -> Result<()> {
         // First, send a TERMINATE_STREAM message to notify Greengrass
         // that we're closing this subscription
