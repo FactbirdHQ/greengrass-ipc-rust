@@ -11,7 +11,6 @@ mod error;
 pub mod event_stream;
 mod lifecycle;
 pub mod model;
-pub mod utils;
 
 pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};

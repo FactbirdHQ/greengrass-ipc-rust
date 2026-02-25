@@ -1,12 +1,12 @@
-//! Error types for AWS IoT Device Shadow operations
+//! Error types for shadow manager operations
 
 use std::fmt;
 
-/// Errors that can occur during shadow operations
+/// Errors that can occur during shadow manager operations
 #[derive(Debug)]
 pub enum ShadowError {
     /// IPC communication error
-    IpcError(crate::Error),
+    IpcError(greengrass_ipc_rust::Error),
 
     /// JSON serialization/deserialization error
     SerializationError(serde_json::Error),
@@ -32,7 +32,6 @@ pub enum ShadowError {
     ShadowNotFound,
 
     /// AWS IoT SDK error
-    #[cfg(feature = "shadow-manager")]
     AwsSdkError(aws_sdk_iotdataplane::Error),
 
     /// Invalid topic format
@@ -43,6 +42,12 @@ pub enum ShadowError {
 
     /// Client token mismatch
     ClientTokenMismatch { expected: String, received: String },
+
+    /// Storage error from rustot
+    StorageError(String),
+
+    /// Shadow ID not managed
+    ShadowNotManaged(String),
 }
 
 impl fmt::Display for ShadowError {
@@ -56,7 +61,6 @@ impl fmt::Display for ShadowError {
             }
             ShadowError::Timeout => write!(f, "Operation timeout"),
             ShadowError::InvalidDocument(msg) => write!(f, "Invalid shadow document: {}", msg),
-            #[cfg(feature = "shadow-manager")]
             ShadowError::AwsSdkError(msg) => write!(f, "AWS SDK error: {}", msg),
             ShadowError::ShadowNotFound => write!(f, "Shadow not found"),
             ShadowError::InvalidTopic(topic) => write!(f, "Invalid topic format: {}", topic),
@@ -68,6 +72,8 @@ impl fmt::Display for ShadowError {
                     expected, received
                 )
             }
+            ShadowError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+            ShadowError::ShadowNotManaged(id) => write!(f, "Shadow ID '{}' not managed", id),
         }
     }
 }
@@ -83,8 +89,8 @@ impl std::error::Error for ShadowError {
     }
 }
 
-impl From<crate::Error> for ShadowError {
-    fn from(err: crate::Error) -> Self {
+impl From<greengrass_ipc_rust::Error> for ShadowError {
+    fn from(err: greengrass_ipc_rust::Error) -> Self {
         ShadowError::IpcError(err)
     }
 }
@@ -101,5 +107,5 @@ impl From<std::io::Error> for ShadowError {
     }
 }
 
-/// Result type for shadow operations
+/// Result type for shadow manager operations
 pub type ShadowResult<T> = Result<T, ShadowError>;
