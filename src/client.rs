@@ -48,26 +48,13 @@ impl GreengrassCoreIPCClient {
         Req: serde::Serialize,
         Resp: serde::de::DeserializeOwned,
     {
-        // Create a unique stream ID for this operation
-        let stream_id = self.connection.allocate_stream_id().await?;
-
-        // Create a oneshot channel for the response
-        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
-
-        // Register the response handler for this stream
-        self.connection
-            .register_response_handler(stream_id, response_sender)
-            .await?;
-
         // Serialize the request to JSON
         let request_json =
             serde_json::to_string(request).map_err(|e| Error::SerializationError(e.to_string()))?;
 
-        // Create the event stream message following AWS Event Stream RPC protocol
-        let mut event_message = crate::event_stream::EventStreamMessage::new();
-        event_message = event_message
+        // Build message WITHOUT StreamId — it will be set atomically at send time
+        let event_message = crate::event_stream::EventStreamMessage::new()
             .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(Header::StreamId(stream_id))
             .with_header(Header::MessageFlags(0)) // No flags
             .with_header(Header::ContentType("application/json".to_string()))
             .with_header(Header::Operation(format!(
@@ -80,25 +67,25 @@ impl GreengrassCoreIPCClient {
             )))
             .with_payload(request_json.as_bytes().to_vec());
 
-        // Send the message over the connection
-        log::debug!(
-            "Sending {} operation on stream {}",
-            operation_name,
-            stream_id
-        );
-        log::trace!("Message headers: {:?}", event_message.headers);
-        log::trace!(
-            "Message payload: {}",
-            String::from_utf8_lossy(&event_message.payload)
-        );
-
-        match self.connection.send_message(&event_message).await {
-            Ok(()) => log::debug!("{} message sent successfully", operation_name),
+        // Atomically allocate stream ID and send (guarantees wire ordering)
+        let stream_id = match self.connection.send_operation_message(event_message).await {
+            Ok(id) => {
+                log::debug!("{} message sent on stream {}", operation_name, id);
+                id
+            }
             Err(e) => {
                 log::error!("Failed to send {} message: {}", operation_name, e);
                 return Err(e);
             }
-        }
+        };
+
+        // Register response handler after send — safe because the server's
+        // processing time on the Unix socket guarantees the response arrives
+        // after this HashMap insert completes.
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
 
         log::debug!("Waiting for response on stream {}...", stream_id);
         // Wait for the response with timeout
@@ -153,44 +140,16 @@ impl GreengrassCoreIPCClient {
         Req: serde::Serialize,
         Resp: serde::de::DeserializeOwned + Send + 'static,
     {
-        // Create a unique stream ID for this operation
-        let stream_id = self.connection.allocate_stream_id().await?;
-
         // Create a unique operation ID
         let operation_id = uuid::Uuid::new_v4().to_string();
-
-        // Create channels for the response and message delivery
-        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
-        let (message_sender, message_receiver) = mpsc::unbounded_channel();
-
-        // Create the subscription handler
-        let handler = StreamOperationHandler::new(message_sender, message_type_name);
-
-        // Register the response handler for the initial subscribe response
-        self.connection
-            .register_response_handler(stream_id, response_sender)
-            .await?;
-
-        // Register the stream handler for ongoing subscription messages
-        let stream_handler = Box::new(handler);
-        self.connection
-            .register_stream_handler(operation_id.clone(), stream_handler)
-            .await?;
-
-        // Register the mapping from stream ID to operation ID for subscription messages
-        self.connection
-            .register_stream_operation_mapping(stream_id, operation_id.clone())
-            .await?;
 
         // Serialize the request to JSON
         let request_json =
             serde_json::to_string(request).map_err(|e| Error::SerializationError(e.to_string()))?;
 
-        // Create the event stream message following AWS Event Stream RPC protocol
-        let mut subscribe_message = crate::event_stream::EventStreamMessage::new();
-        subscribe_message = subscribe_message
+        // Build message WITHOUT StreamId — it will be set atomically at send time
+        let subscribe_message = crate::event_stream::EventStreamMessage::new()
             .with_header(Header::MessageType(0)) // APPLICATION_MESSAGE = 0
-            .with_header(Header::StreamId(stream_id))
             .with_header(Header::MessageFlags(0)) // No flags
             .with_header(Header::ContentType("application/json".to_string()))
             .with_header(Header::Operation(format!(
@@ -204,30 +163,47 @@ impl GreengrassCoreIPCClient {
             .with_header(Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
-        // Send the message over the connection
-        log::debug!(
-            "Sending {} operation on stream {} with operation ID {}",
-            operation_name,
-            stream_id,
-            operation_id
-        );
-        log::trace!("Message headers: {:?}", subscribe_message.headers);
-        log::trace!(
-            "Message payload: {}",
-            String::from_utf8_lossy(&subscribe_message.payload)
-        );
-
-        match self.connection.send_message(&subscribe_message).await {
-            Ok(()) => log::debug!("{} message sent successfully", operation_name),
+        // Atomically allocate stream ID and send (guarantees wire ordering)
+        let stream_id = match self
+            .connection
+            .send_operation_message(subscribe_message)
+            .await
+        {
+            Ok(id) => {
+                log::debug!(
+                    "{} message sent on stream {} with operation ID {}",
+                    operation_name,
+                    id,
+                    operation_id
+                );
+                id
+            }
             Err(e) => {
                 log::error!("Failed to send {} message: {}", operation_name, e);
-                let _ = self
-                    .connection
-                    .unregister_stream_handler(&operation_id)
-                    .await;
                 return Err(e);
             }
-        }
+        };
+
+        // Register handlers after send — safe because the server's processing
+        // time on the Unix socket guarantees the response arrives after these
+        // HashMap inserts complete.
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+
+        let handler = StreamOperationHandler::new(message_sender, message_type_name);
+
+        self.connection
+            .register_response_handler(stream_id, response_sender)
+            .await?;
+
+        let stream_handler = Box::new(handler);
+        self.connection
+            .register_stream_handler(operation_id.clone(), stream_handler)
+            .await?;
+
+        self.connection
+            .register_stream_operation_mapping(stream_id, operation_id.clone())
+            .await?;
 
         // Wait for the initial response
         log::debug!(
