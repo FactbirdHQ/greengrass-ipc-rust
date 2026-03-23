@@ -67,8 +67,14 @@ impl GreengrassCoreIPCClient {
             )))
             .with_payload(request_json.as_bytes().to_vec());
 
-        // Atomically allocate stream ID and send (guarantees wire ordering)
-        let stream_id = match self.connection.send_operation_message(event_message).await {
+        // Allocate stream ID, register response handler, and send — all
+        // atomically so the read loop can never see a response without a handler.
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        let stream_id = match self
+            .connection
+            .send_operation_message(event_message, Some(response_sender))
+            .await
+        {
             Ok(id) => {
                 log::debug!("{} message sent on stream {}", operation_name, id);
                 id
@@ -78,14 +84,6 @@ impl GreengrassCoreIPCClient {
                 return Err(e);
             }
         };
-
-        // Register response handler after send — safe because the server's
-        // processing time on the Unix socket guarantees the response arrives
-        // after this HashMap insert completes.
-        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
-        self.connection
-            .register_response_handler(stream_id, response_sender)
-            .await?;
 
         log::debug!("Waiting for response on stream {}...", stream_id);
         // Wait for the response with timeout
@@ -163,10 +161,22 @@ impl GreengrassCoreIPCClient {
             .with_header(Header::OperationId(operation_id.clone()))
             .with_payload(request_json.as_bytes().to_vec());
 
-        // Atomically allocate stream ID and send (guarantees wire ordering)
+        // Register stream/operation handlers before send so the read loop
+        // can route subscription events immediately.
+        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+
+        let handler = StreamOperationHandler::new(message_sender, message_type_name);
+        let stream_handler = Box::new(handler);
+        self.connection
+            .register_stream_handler(operation_id.clone(), stream_handler)
+            .await?;
+
+        // Allocate stream ID, register response handler, and send — all
+        // atomically so the read loop can never see a response without a handler.
         let stream_id = match self
             .connection
-            .send_operation_message(subscribe_message)
+            .send_operation_message(subscribe_message, Some(response_sender))
             .await
         {
             Ok(id) => {
@@ -184,23 +194,7 @@ impl GreengrassCoreIPCClient {
             }
         };
 
-        // Register handlers after send — safe because the server's processing
-        // time on the Unix socket guarantees the response arrives after these
-        // HashMap inserts complete.
-        let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
-        let (message_sender, message_receiver) = mpsc::unbounded_channel();
-
-        let handler = StreamOperationHandler::new(message_sender, message_type_name);
-
-        self.connection
-            .register_response_handler(stream_id, response_sender)
-            .await?;
-
-        let stream_handler = Box::new(handler);
-        self.connection
-            .register_stream_handler(operation_id.clone(), stream_handler)
-            .await?;
-
+        // Register stream-to-operation mapping now that we have the stream ID
         self.connection
             .register_stream_operation_mapping(stream_id, operation_id.clone())
             .await?;
