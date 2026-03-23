@@ -663,12 +663,22 @@ impl Connection {
         Ok(self.next_stream_id.fetch_add(1, Ordering::SeqCst))
     }
 
-    /// Atomically allocate a stream ID and send a message.
+    /// Atomically allocate a stream ID, register a response handler, and send
+    /// a message.
     ///
     /// The message must NOT already contain a `:stream-id` header — one will be
     /// added under the write lock so that IDs hit the wire in allocation order.
+    ///
+    /// The response handler is registered under the same lock, **before** the
+    /// bytes hit the wire, so the read loop can never see a response for a
+    /// stream ID that has no handler yet.
+    ///
     /// Returns the allocated stream ID.
-    pub async fn send_operation_message(&self, message: EventStreamMessage) -> Result<i32> {
+    pub async fn send_operation_message(
+        &self,
+        message: EventStreamMessage,
+        response_handler: Option<oneshot::Sender<Result<String>>>,
+    ) -> Result<i32> {
         let state = *self.state.read().await;
         if state != ConnectionState::Connected && state != ConnectionState::WaitingForConnectAck {
             return Err(Error::ConnectionClosed(
@@ -681,6 +691,13 @@ impl Connection {
         // Allocate under the write lock so IDs are ordered on the wire
         let stream_id = self.next_stream_id.fetch_add(1, Ordering::SeqCst);
         let message = message.with_header(Header::StreamId(stream_id));
+
+        // Register handler before writing so the read loop can never see a
+        // response for this stream ID without a matching handler.
+        if let Some(sender) = response_handler {
+            let mut handlers = self.operation_response_handlers.write().await;
+            handlers.insert(stream_id, sender);
+        }
 
         if let Some(write_stream) = &mut *write_guard {
             let encoded = message.encode()?;
