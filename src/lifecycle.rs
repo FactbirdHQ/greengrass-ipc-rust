@@ -84,11 +84,3 @@ impl From<std::io::Error> for ConnectionError {
         Self::Io(err)
     }
 }
-
-/// A no-op lifecycle handler that does nothing
-///
-/// This is useful when you don't need to handle lifecycle events.
-#[derive(Debug, Default)]
-pub struct NoOpLifecycleHandler;
-
-impl LifecycleHandler for NoOpLifecycleHandler {}

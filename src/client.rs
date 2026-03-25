@@ -884,7 +884,7 @@ where
                 match serde_json::from_str::<Resp>(&payload_str) {
                     Ok(message) => {
                         // Send the message through the channel
-                        if let Err(_) = self.message_sender.send(message) {
+                        if self.message_sender.send(message).is_err() {
                             log::warn!("Failed to send streaming message - receiver dropped");
                         }
                     }

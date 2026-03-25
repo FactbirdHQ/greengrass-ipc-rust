@@ -451,8 +451,6 @@ impl Connection {
     ) {
         let mut buffer = vec![0u8; 1024 * 64]; // 64KB buffer for reading
         let mut reader = crate::event_stream::EventStreamReader::new();
-        let mut connect_ack_sent = false;
-
         'outer: loop {
             // Check for control messages
             if let Ok(msg) = control_rx.try_recv() {
@@ -470,14 +468,10 @@ impl Connection {
                     // EOF
                     debug!("Socket connection closed by remote");
 
-                    // If we haven't sent the connect ack yet, send an error
-                    if !connect_ack_sent {
-                        if let Some(tx) = connect_ack_tx.take() {
-                            let _ = tx.send(Err(Error::ConnectionClosed(
-                                "Connection closed by remote".to_string(),
-                            )));
-                            connect_ack_sent = true;
-                        }
+                    if let Some(tx) = connect_ack_tx.take() {
+                        let _ = tx.send(Err(Error::ConnectionClosed(
+                            "Connection closed by remote".to_string(),
+                        )));
                     }
 
                     // Call handle_disconnection to notify handlers
@@ -493,12 +487,8 @@ impl Connection {
                     // Read error
                     error!("Error reading from socket: {}", e);
 
-                    // If we haven't sent the connect ack yet, send an error
-                    if !connect_ack_sent {
-                        if let Some(tx) = connect_ack_tx.take() {
-                            let _ = tx.send(Err(Error::ReceiveFailed(e.to_string())));
-                            connect_ack_sent = true;
-                        }
+                    if let Some(tx) = connect_ack_tx.take() {
+                        let _ = tx.send(Err(Error::ReceiveFailed(e.to_string())));
                     }
 
                     // Call handle_disconnection to notify handlers
@@ -516,25 +506,19 @@ impl Connection {
             loop {
                 match reader.try_read_message() {
                     Ok(Some(message)) => {
-                        // Handle the message - if we need to pass the oneshot sender,
-                        // we'll pass it and take ownership, otherwise we'll keep it
-                        let is_connect_ack = match message.get_header(":message-type") {
-                            Some(crate::event_stream::Header::MessageType(5)) => true, // CONNECT_ACK = 5
-                            _ => false,
-                        };
+                        let is_connect_ack = matches!(
+                            message.get_header(":message-type"),
+                            Some(crate::event_stream::Header::MessageType(5))
+                        );
 
-                        if is_connect_ack && !connect_ack_sent {
-                            // For CONNECT_ACK we need to handle it specially
+                        if is_connect_ack {
                             if let Some(tx) = connect_ack_tx.take() {
                                 if let Err(e) = self.handle_connect_ack(message, tx).await {
                                     error!("Error handling CONNECT_ACK: {}", e);
-                                    connect_ack_sent = true;
                                     break 'outer;
                                 }
-                                connect_ack_sent = true;
                             }
                         } else {
-                            // For other message types, we can handle them directly
                             if let Err(e) = self.handle_non_connect_message(message).await {
                                 error!("Error handling message: {}", e);
                             }
@@ -548,12 +532,8 @@ impl Connection {
                         // Protocol error
                         error!("Protocol error decoding message: {}", e);
 
-                        // If we haven't sent the connect ack yet, send an error
-                        if !connect_ack_sent {
-                            if let Some(tx) = connect_ack_tx.take() {
-                                let _ = tx.send(Err(Error::ProtocolError(e.to_string())));
-                                connect_ack_sent = true;
-                            }
+                        if let Some(tx) = connect_ack_tx.take() {
+                            let _ = tx.send(Err(Error::ProtocolError(e.to_string())));
                         }
 
                         // Call handle_disconnection to notify handlers
@@ -799,76 +779,6 @@ impl Connection {
         let handlers = self.response_handlers.read().await;
         if let Some(handler) = handlers.get(&operation_id) {
             handler.handle_message(message)?;
-        } else {
-            warn!("No handler found for operation ID: {}", operation_id);
-        }
-
-        Ok(())
-    }
-
-    /// Handle a response message
-    async fn handle_response(&self, message: EventStreamMessage) -> Result<()> {
-        // Extract operation ID
-        let operation_id = match message
-            .get_header(":operation-id")
-            .and_then(Header::string_value)
-        {
-            Some(id) => id,
-            None => {
-                warn!("Received response with no operation ID");
-                return Ok(());
-            }
-        };
-
-        // Find the appropriate handler
-        let handlers = self.response_handlers.read().await;
-        if let Some(handler) = handlers.get(&operation_id) {
-            handler.handle_message(message)?;
-        } else {
-            warn!("No handler found for operation ID: {}", operation_id);
-        }
-
-        Ok(())
-    }
-
-    /// Handle an error message
-    async fn handle_error(&self, message: EventStreamMessage) -> Result<()> {
-        // Extract operation ID
-        let operation_id = match message
-            .get_header(":operation-id")
-            .and_then(Header::string_value)
-        {
-            Some(id) => id,
-            None => {
-                warn!("Received error with no operation ID");
-                return Ok(());
-            }
-        };
-
-        // Find the appropriate handler
-        let error_type = message
-            .get_header(":error-type")
-            .and_then(Header::string_value)
-            .unwrap_or("Unknown".to_string());
-        let error_message = message
-            .get_header(":error-message")
-            .and_then(Header::string_value)
-            .unwrap_or("No error message".to_string());
-        let error = Error::ServiceError(format!("{}: {}", error_type, error_message));
-
-        let handlers = self.response_handlers.read().await;
-        if let Some(handler) = handlers.get(&operation_id) {
-            // If handler returns true, it wants to close the operation
-            match handler.handle_error(&error) {
-                Ok(should_close) => {
-                    if should_close {
-                        // Operation will be closed by the client
-                    }
-                }
-                Err(e) => {
-                    warn!("Error handling stream error: {}", e);
-                }
-            }
         } else {
             warn!("No handler found for operation ID: {}", operation_id);
         }
