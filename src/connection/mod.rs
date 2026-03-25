@@ -681,7 +681,11 @@ impl Connection {
 
         if let Some(write_stream) = &mut *write_guard {
             let encoded = message.encode()?;
-            debug!("Encoded operation message size: {} bytes (stream {})", encoded.len(), stream_id);
+            debug!(
+                "Encoded operation message size: {} bytes (stream {})",
+                encoded.len(),
+                stream_id
+            );
 
             write_stream.write_all(&encoded).await.map_err(|e| {
                 error!("Failed to write message: {}", e);
