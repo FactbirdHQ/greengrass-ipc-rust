@@ -289,8 +289,13 @@ pub struct EventStreamMessage {
     pub payload: Bytes,
 }
 
+impl Default for EventStreamMessage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventStreamMessage {
-    /// Create a new Event Stream message
     /// Create a new empty message
     pub fn new() -> Self {
         Self {
@@ -465,6 +470,12 @@ pub struct EventStreamReader {
     buffer: BytesMut,
 }
 
+impl Default for EventStreamReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventStreamReader {
     /// Create a new Event Stream reader
     pub fn new() -> Self {
@@ -509,6 +520,12 @@ impl EventStreamReader {
 /// A writer for Event Stream messages
 pub struct EventStreamWriter {
     output: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Default for EventStreamWriter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventStreamWriter {
