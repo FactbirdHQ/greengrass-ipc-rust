@@ -141,7 +141,7 @@ impl HeaderValue {
                 return Err(Error::InvalidInput(format!(
                     "Unknown header type: {}",
                     header_type
-                )))
+                )));
             }
         })
     }
@@ -272,7 +272,7 @@ impl Header {
                 return Err(Error::InvalidInput(format!(
                     "Unknown header: {} with value {:?}",
                     name, value
-                )))
+                )));
             }
         };
 

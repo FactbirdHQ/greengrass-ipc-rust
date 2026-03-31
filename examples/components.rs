@@ -4,11 +4,11 @@
 //! information about all installed components.
 
 use greengrass_ipc_rust::{
+    GreengrassCoreIPCClient,
     model::{
         ComponentState, GetComponentDetailsRequest, PauseComponentRequest, RequestStatus,
         ResumeComponentRequest,
     },
-    GreengrassCoreIPCClient,
 };
 
 #[tokio::main]

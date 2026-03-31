@@ -17,7 +17,7 @@ use tokio::time;
 
 // Define helper functions for base64 serialization
 mod serde_with_ext {
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize_base64<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>

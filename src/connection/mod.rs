@@ -6,15 +6,15 @@
 use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{
-    unix::{OwnedReadHalf, OwnedWriteHalf},
     UnixStream,
+    unix::{OwnedReadHalf, OwnedWriteHalf},
 };
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
 use crate::error::{Error, Result};
 use crate::event_stream::{EventStreamMessage, Header};
@@ -828,7 +828,10 @@ impl Connection {
             match mapping.get(stream_id) {
                 Some(id) => id.clone(),
                 None => {
-                    warn!("Received stream event with no operation ID and no stream mapping for stream {}", stream_id);
+                    warn!(
+                        "Received stream event with no operation ID and no stream mapping for stream {}",
+                        stream_id
+                    );
                     return Ok(());
                 }
             }
