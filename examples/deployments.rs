@@ -5,8 +5,8 @@
 //! ```
 
 use greengrass_ipc_rust::{
-    model::{DeploymentStatus, GetLocalDeploymentStatusRequest},
     GreengrassCoreIPCClient,
+    model::{DeploymentStatus, GetLocalDeploymentStatusRequest},
 };
 
 #[tokio::main]

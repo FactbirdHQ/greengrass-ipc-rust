@@ -4,7 +4,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use serde_with::{base64::Base64, serde_as, DeserializeAs, SerializeAs};
+use serde_with::{DeserializeAs, SerializeAs, base64::Base64, serde_as};
 
 /// Helper for serializing/deserializing Bytes as Vec<u8>
 struct BytesAsVec;
