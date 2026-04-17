@@ -267,6 +267,7 @@ impl GreengrassCoreIPCClient {
         // Create the subscription
         Ok(StreamOperation::new(
             self.connection.clone(),
+            stream_id,
             operation_id,
             message_receiver,
         ))
@@ -738,19 +739,30 @@ impl GreengrassCoreIPCClient {
         &self,
         request: SubscribeToIoTCoreRequest,
     ) -> Result<StreamOperation<IoTCoreMessage>> {
-        self.send_subscription_request(
-            "SubscribeToIoTCore",
-            "SubscribeToIoTCoreRequest",
-            "IoTCoreMessage",
-            &request,
-        )
-        .await
+        let topic = request.topic_name.clone();
+        let op = self
+            .send_subscription_request(
+                "SubscribeToIoTCore",
+                "SubscribeToIoTCoreRequest",
+                "IoTCoreMessage",
+                &request,
+            )
+            .await?;
+
+        // Register topic mapping so late-arriving messages on a terminated
+        // stream for this topic can be forwarded to the new active handler.
+        self.connection
+            .register_stream_topic(op.stream_id(), op.operation_id(), &topic)
+            .await;
+
+        Ok(op)
     }
 }
 
 /// A Stream-based subscription that yields messages from a subscribed topic
 pub struct StreamOperation<Resp> {
     connection: std::sync::Arc<Connection>,
+    stream_id: i32,
     operation_id: String,
     message_receiver: mpsc::UnboundedReceiver<Resp>,
 }
@@ -758,14 +770,26 @@ pub struct StreamOperation<Resp> {
 impl<Resp> StreamOperation<Resp> {
     fn new(
         connection: std::sync::Arc<Connection>,
+        stream_id: i32,
         operation_id: String,
         message_receiver: mpsc::UnboundedReceiver<Resp>,
     ) -> Self {
         Self {
             connection,
+            stream_id,
             operation_id,
             message_receiver,
         }
+    }
+
+    /// The stream ID assigned by the IPC connection.
+    pub fn stream_id(&self) -> i32 {
+        self.stream_id
+    }
+
+    /// The operation ID for this stream.
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
     }
 
     /// Receive the next message from the stream.
@@ -776,13 +800,10 @@ impl<Resp> StreamOperation<Resp> {
     }
 
     pub async fn close(self) -> Result<()> {
-        // First, send a TERMINATE_STREAM message to notify Greengrass
-        // that we're closing this subscription
         self.connection
             .send_terminate_stream_message(&self.operation_id)
             .await?;
 
-        // Then unregister the local stream handler
         self.connection
             .unregister_stream_handler(&self.operation_id)
             .await

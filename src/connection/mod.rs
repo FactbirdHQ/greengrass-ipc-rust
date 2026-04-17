@@ -69,6 +69,10 @@ pub struct Connection {
     operation_response_handlers: Arc<RwLock<HashMap<i32, oneshot::Sender<Result<String>>>>>,
     // Mapping from stream ID to operation ID for subscription handling
     stream_to_operation_map: Arc<RwLock<HashMap<i32, String>>>,
+    // Maps stream ID → topic name (retained after termination for forwarding)
+    stream_to_topic: Arc<RwLock<HashMap<i32, String>>>,
+    // Maps topic → currently active operation ID (updated on each subscribe)
+    topic_to_active_operation: Arc<RwLock<HashMap<String, String>>>,
     // Next stream ID to allocate
     next_stream_id: Arc<AtomicI32>,
 }
@@ -141,6 +145,8 @@ impl Connection {
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
             operation_response_handlers: Arc::new(RwLock::new(HashMap::new())),
             stream_to_operation_map: Arc::new(RwLock::new(HashMap::new())),
+            stream_to_topic: Arc::new(RwLock::new(HashMap::new())),
+            topic_to_active_operation: Arc::new(RwLock::new(HashMap::new())),
             next_stream_id: Arc::new(AtomicI32::new(1)),
         };
 
@@ -292,6 +298,8 @@ impl Connection {
             response_handlers: self.response_handlers.clone(),
             operation_response_handlers: self.operation_response_handlers.clone(),
             stream_to_operation_map: self.stream_to_operation_map.clone(),
+            stream_to_topic: self.stream_to_topic.clone(),
+            topic_to_active_operation: self.topic_to_active_operation.clone(),
             next_stream_id: self.next_stream_id.clone(),
         }
     }
@@ -396,7 +404,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Send a TERMINATE_STREAM message for an operation
+    /// Send a TERMINATE_STREAM message for an operation.
     pub async fn send_terminate_stream_message(&self, operation_id: &str) -> Result<()> {
         // Find the stream ID for this operation
         let stream_id = {
@@ -408,28 +416,26 @@ impl Connection {
         };
 
         if let Some(stream_id) = stream_id {
-            // Create a TERMINATE_STREAM message
-            let mut terminate_message = crate::event_stream::EventStreamMessage::new();
-            terminate_message = terminate_message
-                .with_header(crate::event_stream::Header::MessageType(0)) // APPLICATION_MESSAGE = 0
+            let mut msg = crate::event_stream::EventStreamMessage::new();
+            msg = msg
+                .with_header(crate::event_stream::Header::MessageType(0))
                 .with_header(crate::event_stream::Header::StreamId(stream_id))
-                .with_header(crate::event_stream::Header::MessageFlags(2)) // TERMINATE_STREAM = 2
+                .with_header(crate::event_stream::Header::MessageFlags(2))
                 .with_header(crate::event_stream::Header::ContentType(
                     "application/json".to_string(),
                 ));
 
-            // Try to send the terminate message, but don't fail if it doesn't work
-            // (stream might already be closed by the server)
-            if let Err(e) = self.send_message(&terminate_message).await {
+            if let Err(e) = self.send_message(&msg).await {
                 log::debug!(
-                    "Failed to send TERMINATE_STREAM message for operation {}: {}",
+                    "Failed to send TERMINATE_STREAM for operation {}: {}",
                     operation_id,
                     e
                 );
             } else {
                 log::debug!(
-                    "Sent TERMINATE_STREAM message for operation {}",
-                    operation_id
+                    "Sent TERMINATE_STREAM for operation {} (stream {})",
+                    operation_id,
+                    stream_id
                 );
             }
         } else {
@@ -440,6 +446,23 @@ impl Connection {
         }
 
         Ok(())
+    }
+
+    /// Register a stream's topic for late-message forwarding.
+    ///
+    /// When a stream is terminated and a new stream subscribes to the same
+    /// topic, the server may still deliver one last message on the old stream
+    /// before processing the TERMINATE. This mapping lets the read loop
+    /// forward such messages to the currently active handler for that topic.
+    pub async fn register_stream_topic(&self, stream_id: i32, operation_id: &str, topic: &str) {
+        self.stream_to_topic
+            .write()
+            .await
+            .insert(stream_id, topic.to_string());
+        self.topic_to_active_operation
+            .write()
+            .await
+            .insert(topic.to_string(), operation_id.to_string());
     }
 
     /// Main message read loop that processes incoming messages with dedicated read half
@@ -823,13 +846,39 @@ impl Connection {
         } else if let Some(crate::event_stream::Header::StreamId(stream_id)) =
             message.get_header(":stream-id")
         {
-            // If no operation ID, try to map from stream ID (for subscriptions)
+            // Try the primary stream→operation mapping first
             let mapping = self.stream_to_operation_map.read().await;
-            match mapping.get(stream_id) {
-                Some(id) => id.clone(),
-                None => {
+            if let Some(id) = mapping.get(stream_id) {
+                id.clone()
+            } else {
+                drop(mapping);
+                // Stream was terminated but the server sent one last message
+                // before processing our TERMINATE_STREAM. Forward to the
+                // currently active handler for the same topic, if any.
+                let topic = self.stream_to_topic.read().await.get(stream_id).cloned();
+                if let Some(topic) = topic {
+                    if let Some(active_op) = self
+                        .topic_to_active_operation
+                        .read()
+                        .await
+                        .get(&topic)
+                        .cloned()
+                    {
+                        debug!(
+                            "Forwarding late message from terminated stream {} to active operation {} (topic {})",
+                            stream_id, active_op, topic
+                        );
+                        active_op
+                    } else {
+                        debug!(
+                            "Late message on terminated stream {} for topic {} — no active handler",
+                            stream_id, topic
+                        );
+                        return Ok(());
+                    }
+                } else {
                     warn!(
-                        "Received stream event with no operation ID and no stream mapping for stream {}",
+                        "Received stream event with no stream mapping for stream {}",
                         stream_id
                     );
                     return Ok(());
