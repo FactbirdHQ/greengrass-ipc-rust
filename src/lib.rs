@@ -9,11 +9,17 @@ mod client;
 mod connection;
 mod error;
 pub mod event_stream;
+#[cfg(test)]
+mod fake_core;
+mod iot_core;
+#[cfg(test)]
+mod iot_core_tests;
 mod lifecycle;
 pub mod model;
 
 pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};
+pub use iot_core::{DEFAULT_RESUBSCRIBE_HOLD, DEFAULT_STREAM_LIMIT, IoTCoreSubscription};
 pub use lifecycle::{ConnectionError, LifecycleHandler};
 pub use model::{
     BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent,
