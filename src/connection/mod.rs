@@ -48,7 +48,9 @@ enum ConnectionState {
     Disconnecting,
 }
 
-/// A connection to the Greengrass IPC service
+/// `:message-flags` bit the server sets on the last message of a stream.
+const TERMINATE_STREAM_FLAG: i32 = 2;
+
 /// A connection to the Greengrass IPC service
 pub struct Connection {
     // Socket path used for this connection
@@ -389,11 +391,29 @@ impl Connection {
         let mut handlers = self.response_handlers.write().await;
         handlers.remove(operation_id);
 
-        // Also remove from stream mapping
+        // Also remove from stream mapping, and the initial-response handler of
+        // a subscription that is torn down before its response arrived
         let mut mapping = self.stream_to_operation_map.write().await;
-        mapping.retain(|_, op_id| op_id != operation_id);
+        let mut response_handlers = self.operation_response_handlers.write().await;
+        mapping.retain(|stream_id, op_id| {
+            if op_id == operation_id {
+                response_handlers.remove(stream_id);
+                false
+            } else {
+                true
+            }
+        });
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn registered_stream_count(&self) -> (usize, usize, usize) {
+        (
+            self.response_handlers.read().await.len(),
+            self.stream_to_operation_map.read().await.len(),
+            self.operation_response_handlers.read().await.len(),
+        )
     }
 
     /// Send a TERMINATE_STREAM message for an operation
@@ -659,6 +679,22 @@ impl Connection {
         message: EventStreamMessage,
         response_handler: Option<oneshot::Sender<Result<String>>>,
     ) -> Result<i32> {
+        self.send_stream_operation_message(message, response_handler, None)
+            .await
+    }
+
+    /// Like [`send_operation_message`](Self::send_operation_message), and also
+    /// maps the allocated stream ID to `operation_id` before the message is
+    /// written. A caller cancelled while the write is in flight never learns the
+    /// stream ID, so the mapping must already exist for
+    /// [`send_terminate_stream_message`](Self::send_terminate_stream_message) to
+    /// find the stream during its cleanup.
+    pub async fn send_stream_operation_message(
+        &self,
+        message: EventStreamMessage,
+        response_handler: Option<oneshot::Sender<Result<String>>>,
+        operation_id: Option<String>,
+    ) -> Result<i32> {
         let state = *self.state.read().await;
         if state != ConnectionState::Connected && state != ConnectionState::WaitingForConnectAck {
             return Err(Error::ConnectionClosed(
@@ -677,6 +713,10 @@ impl Connection {
         if let Some(sender) = response_handler {
             let mut handlers = self.operation_response_handlers.write().await;
             handlers.insert(stream_id, sender);
+        }
+        if let Some(operation_id) = operation_id {
+            let mut mapping = self.stream_to_operation_map.write().await;
+            mapping.insert(stream_id, operation_id);
         }
 
         if let Some(write_stream) = &mut *write_guard {
@@ -729,14 +769,31 @@ impl Connection {
 
     /// Handle an APPLICATION_MESSAGE (could be response to operation)
     async fn handle_application_message(&self, message: EventStreamMessage) -> Result<()> {
-        // Get the stream ID from the message
-        if let Some(crate::event_stream::Header::StreamId(stream_id)) =
-            message.get_header(":stream-id")
-        {
+        let stream_id = match message.get_header(":stream-id") {
+            Some(crate::event_stream::Header::StreamId(id)) => Some(*id),
+            _ => None,
+        };
+        // The core ends a stream itself with this flag: on an error response
+        // (unauthorized, failed SUBACK, offline) and when it closes a live
+        // stream. The stream is gone on its side from then on.
+        let terminated = matches!(
+            message.get_header(":message-flags"),
+            Some(crate::event_stream::Header::MessageFlags(f)) if f & TERMINATE_STREAM_FLAG != 0
+        );
+
+        if let Some(stream_id) = stream_id {
             // Check if this is a response to one of our operations
-            let mut handlers = self.operation_response_handlers.write().await;
-            if let Some(sender) = handlers.remove(stream_id) {
-                // This is a response to an operation
+            let sender = self
+                .operation_response_handlers
+                .write()
+                .await
+                .remove(&stream_id);
+            if let Some(sender) = sender {
+                // Forget the stream before the caller wakes up: its cleanup must
+                // not send TERMINATE_STREAM for it.
+                if terminated {
+                    self.end_stream(stream_id).await;
+                }
                 let payload_str = String::from_utf8_lossy(&message.payload).to_string();
                 let _ = sender.send(Ok(payload_str));
                 return Ok(());
@@ -744,7 +801,31 @@ impl Connection {
         }
 
         // If not an operation response, treat as stream event
-        self.handle_stream_event(message).await
+        let result = self.handle_stream_event(message).await;
+        if let (true, Some(stream_id)) = (terminated, stream_id) {
+            self.end_stream(stream_id).await;
+        }
+        result
+    }
+
+    /// The core ended `stream_id`. Drop its handler, which closes the
+    /// subscriber's channel, and its mapping, so no TERMINATE_STREAM is ever
+    /// sent for it: the core treats a terminate for a stream it no longer has
+    /// as a protocol error and closes the whole IPC connection.
+    async fn end_stream(&self, stream_id: i32) {
+        let operation_id = self
+            .stream_to_operation_map
+            .write()
+            .await
+            .remove(&stream_id);
+        if let Some(operation_id) = operation_id {
+            debug!("Stream {} ended by the server", stream_id);
+            if let Some(handler) = self.response_handlers.write().await.remove(&operation_id) {
+                if let Err(e) = handler.handle_closed() {
+                    warn!("Error handling stream closure: {}", e);
+                }
+            }
+        }
     }
 
     /// Handle a CONNECT_ACK message
@@ -892,15 +973,20 @@ impl Connection {
             *state = ConnectionState::Disconnected;
         }
 
-        // Notify all stream handlers
+        // Notify all stream handlers, then drop them: their subscribers' channels
+        // close, so a reader sees the end of its stream instead of waiting on a
+        // connection that is gone. Pending operations fail the same way.
         {
-            let handlers = self.response_handlers.read().await;
+            let mut handlers = self.response_handlers.write().await;
             for (_, handler) in handlers.iter() {
                 if let Err(e) = handler.handle_closed() {
                     warn!("Error handling stream closure: {}", e);
                 }
             }
+            handlers.clear();
         }
+        self.stream_to_operation_map.write().await.clear();
+        self.operation_response_handlers.write().await.clear();
 
         // Notify lifecycle handler
         if let Some(handler) = &self.lifecycle_handler {
