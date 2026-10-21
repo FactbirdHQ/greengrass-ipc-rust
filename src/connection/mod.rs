@@ -389,11 +389,29 @@ impl Connection {
         let mut handlers = self.response_handlers.write().await;
         handlers.remove(operation_id);
 
-        // Also remove from stream mapping
+        // Also remove from stream mapping, and the initial-response handler of
+        // a subscription that is torn down before its response arrived
         let mut mapping = self.stream_to_operation_map.write().await;
-        mapping.retain(|_, op_id| op_id != operation_id);
+        let mut response_handlers = self.operation_response_handlers.write().await;
+        mapping.retain(|stream_id, op_id| {
+            if op_id == operation_id {
+                response_handlers.remove(stream_id);
+                false
+            } else {
+                true
+            }
+        });
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn registered_stream_count(&self) -> (usize, usize, usize) {
+        (
+            self.response_handlers.read().await.len(),
+            self.stream_to_operation_map.read().await.len(),
+            self.operation_response_handlers.read().await.len(),
+        )
     }
 
     /// Send a TERMINATE_STREAM message for an operation
@@ -659,6 +677,22 @@ impl Connection {
         message: EventStreamMessage,
         response_handler: Option<oneshot::Sender<Result<String>>>,
     ) -> Result<i32> {
+        self.send_stream_operation_message(message, response_handler, None)
+            .await
+    }
+
+    /// Like [`send_operation_message`](Self::send_operation_message), and also
+    /// maps the allocated stream ID to `operation_id` before the message is
+    /// written. A caller cancelled while the write is in flight never learns the
+    /// stream ID, so the mapping must already exist for
+    /// [`send_terminate_stream_message`](Self::send_terminate_stream_message) to
+    /// find the stream during its cleanup.
+    pub async fn send_stream_operation_message(
+        &self,
+        message: EventStreamMessage,
+        response_handler: Option<oneshot::Sender<Result<String>>>,
+        operation_id: Option<String>,
+    ) -> Result<i32> {
         let state = *self.state.read().await;
         if state != ConnectionState::Connected && state != ConnectionState::WaitingForConnectAck {
             return Err(Error::ConnectionClosed(
@@ -677,6 +711,10 @@ impl Connection {
         if let Some(sender) = response_handler {
             let mut handlers = self.operation_response_handlers.write().await;
             handlers.insert(stream_id, sender);
+        }
+        if let Some(operation_id) = operation_id {
+            let mut mapping = self.stream_to_operation_map.write().await;
+            mapping.insert(stream_id, operation_id);
         }
 
         if let Some(write_stream) = &mut *write_guard {

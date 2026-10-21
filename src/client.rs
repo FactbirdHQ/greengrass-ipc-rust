@@ -171,12 +171,20 @@ impl GreengrassCoreIPCClient {
         self.connection
             .register_stream_handler(operation_id.clone(), stream_handler)
             .await?;
+        // From here on every early return, and a drop of this future, tears the
+        // stream down; only a subscription handed to the caller keeps it.
+        let pending = PendingSubscription::new(self.connection.clone(), operation_id.clone());
 
-        // Allocate stream ID, register response handler, and send — all
-        // atomically so the read loop can never see a response without a handler.
+        // Allocate stream ID, register response handler and stream mapping, and
+        // send — all atomically so the read loop can never see a response
+        // without a handler, and a cancelled send can still be terminated.
         let stream_id = match self
             .connection
-            .send_operation_message(subscribe_message, Some(response_sender))
+            .send_stream_operation_message(
+                subscribe_message,
+                Some(response_sender),
+                Some(operation_id.clone()),
+            )
             .await
         {
             Ok(id) => {
@@ -193,11 +201,6 @@ impl GreengrassCoreIPCClient {
                 return Err(e);
             }
         };
-
-        // Register stream-to-operation mapping now that we have the stream ID
-        self.connection
-            .register_stream_operation_mapping(stream_id, operation_id.clone())
-            .await?;
 
         // Wait for the initial response
         log::debug!(
@@ -219,28 +222,16 @@ impl GreengrassCoreIPCClient {
                 }
                 Ok(Ok(Err(e))) => {
                     log::error!("Error response for stream {}: {}", stream_id, e);
-                    let _ = self
-                        .connection
-                        .unregister_stream_handler(&operation_id)
-                        .await;
                     return Err(e);
                 }
                 Ok(Err(_)) => {
                     log::error!("Response channel closed for stream {}", stream_id);
-                    let _ = self
-                        .connection
-                        .unregister_stream_handler(&operation_id)
-                        .await;
                     return Err(Error::ConnectionClosed(
                         "Response channel closed".to_string(),
                     ));
                 }
                 Err(_) => {
                     log::error!("Timeout waiting for response on stream {}", stream_id);
-                    let _ = self
-                        .connection
-                        .unregister_stream_handler(&operation_id)
-                        .await;
                     return Err(Error::OperationTimeout);
                 }
             };
@@ -248,10 +239,6 @@ impl GreengrassCoreIPCClient {
         // Check if this is an error response
         if let Err(error) = crate::error::check_and_parse_error_response(&response_json) {
             log::error!("{} failed: {}", operation_name, error);
-            let _ = self
-                .connection
-                .unregister_stream_handler(&operation_id)
-                .await;
             return Err(error);
         }
 
@@ -267,7 +254,7 @@ impl GreengrassCoreIPCClient {
         // Create the subscription
         Ok(StreamOperation::new(
             self.connection.clone(),
-            operation_id,
+            pending.complete(),
             message_receiver,
         ))
     }
@@ -800,25 +787,64 @@ impl<Resp> Stream for StreamOperation<Resp> {
 impl<Resp> Drop for StreamOperation<Resp> {
     fn drop(&mut self) {
         log::debug!("Dropping subscription for operation {}", self.operation_id);
-        let connection = self.connection.clone();
-        let operation_id = self.operation_id.clone();
-
-        // Spawn a cleanup task since Drop cannot be async
-        tokio::spawn(async move {
-            // Try to send TERMINATE_STREAM message first
-            if let Err(e) = connection
-                .send_terminate_stream_message(&operation_id)
-                .await
-            {
-                log::debug!("Failed to send TERMINATE_STREAM during drop: {}", e);
-            }
-
-            // Then unregister the handler
-            if let Err(e) = connection.unregister_stream_handler(&operation_id).await {
-                log::warn!("Failed to unregister stream handler during drop: {}", e);
-            }
-        });
+        spawn_stream_teardown(self.connection.clone(), self.operation_id.clone());
     }
+}
+
+/// Owns a subscription's stream between handler registration and the hand-off
+/// of its [`StreamOperation`]. The handler is registered before the request is
+/// sent, so a failed subscribe, or a subscribe future dropped while it waits for
+/// its response (a lost `select!` branch), would otherwise leave a live stream on
+/// the core whose messages nobody reads.
+struct PendingSubscription {
+    connection: Arc<Connection>,
+    operation_id: Option<String>,
+}
+
+impl PendingSubscription {
+    fn new(connection: Arc<Connection>, operation_id: String) -> Self {
+        Self {
+            connection,
+            operation_id: Some(operation_id),
+        }
+    }
+
+    /// The subscription reached the caller; its `StreamOperation` owns the stream now.
+    fn complete(mut self) -> String {
+        self.operation_id
+            .take()
+            .expect("operation ID is only taken here")
+    }
+}
+
+impl Drop for PendingSubscription {
+    fn drop(&mut self) {
+        if let Some(operation_id) = self.operation_id.take() {
+            log::debug!("Abandoning unfinished subscription {}", operation_id);
+            spawn_stream_teardown(self.connection.clone(), operation_id);
+        }
+    }
+}
+
+/// TERMINATE_STREAM to the core, then forget the stream locally. Drop cannot be
+/// async, so this runs as a task; without a runtime (shutdown) there is no
+/// connection left to clean up either.
+fn spawn_stream_teardown(connection: Arc<Connection>, operation_id: String) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    runtime.spawn(async move {
+        if let Err(e) = connection
+            .send_terminate_stream_message(&operation_id)
+            .await
+        {
+            log::debug!("Failed to send TERMINATE_STREAM during drop: {}", e);
+        }
+
+        if let Err(e) = connection.unregister_stream_handler(&operation_id).await {
+            log::warn!("Failed to unregister stream handler during drop: {}", e);
+        }
+    });
 }
 
 /// A handler that forwards subscription messages to a channel
@@ -884,5 +910,167 @@ where
     fn handle_closed(&self) -> Result<()> {
         log::debug!("Subscription stream closed");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_stream::{EventStreamMessage, EventStreamReader};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
+
+    /// Minimal core: accepts the CONNECT, then forwards every later frame to the
+    /// test. It answers SubscribeToIoTCore only when `answer_subscribe` is set.
+    async fn fake_core(
+        answer_subscribe: bool,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        mpsc::UnboundedReceiver<EventStreamMessage>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ipc.socket");
+        let listener = UnixListener::bind(&path).unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut reader = EventStreamReader::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = match sock.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                reader.add_data(&buf[..n]);
+                while let Ok(Some(msg)) = reader.try_read_message() {
+                    match msg.get_header(":message-type") {
+                        Some(Header::MessageType(4)) => {
+                            let ack = EventStreamMessage::new()
+                                .with_header(Header::MessageType(5))
+                                .with_header(Header::MessageFlags(1));
+                            sock.write_all(&ack.encode().unwrap()).await.unwrap();
+                        }
+                        _ => {
+                            let is_subscribe = matches!(
+                                msg.get_header("operation").and_then(Header::string_value),
+                                Some(op) if op == "aws.greengrass#SubscribeToIoTCore"
+                            );
+                            if answer_subscribe && is_subscribe {
+                                let Some(Header::StreamId(id)) = msg.get_header(":stream-id")
+                                else {
+                                    panic!("subscribe without a stream ID");
+                                };
+                                let resp = EventStreamMessage::new()
+                                    .with_header(Header::MessageType(0))
+                                    .with_header(Header::MessageFlags(0))
+                                    .with_header(Header::StreamId(*id))
+                                    .with_payload(b"{}".to_vec());
+                                sock.write_all(&resp.encode().unwrap()).await.unwrap();
+                            }
+                            let _ = tx.send(msg);
+                        }
+                    }
+                }
+            }
+        });
+        (dir, path, rx)
+    }
+
+    async fn client(path: std::path::PathBuf) -> GreengrassCoreIPCClient {
+        GreengrassCoreIPCClient::connect_with_options(
+            Some(path),
+            Some("token".into()),
+            None,
+            Some(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn request() -> SubscribeToIoTCoreRequest {
+        SubscribeToIoTCoreRequest {
+            topic_name: "$aws/things/t/shadow/name/network/update/delta".into(),
+            qos: QoS::AtLeastOnce,
+        }
+    }
+
+    fn stream_id(msg: &EventStreamMessage) -> i32 {
+        match msg.get_header(":stream-id") {
+            Some(Header::StreamId(id)) => *id,
+            other => panic!("no stream ID: {other:?}"),
+        }
+    }
+
+    fn flags(msg: &EventStreamMessage) -> i32 {
+        match msg.get_header(":message-flags") {
+            Some(Header::MessageFlags(f)) => *f,
+            _ => 0,
+        }
+    }
+
+    async fn next(rx: &mut mpsc::UnboundedReceiver<EventStreamMessage>) -> EventStreamMessage {
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("core saw no frame")
+            .expect("core gone")
+    }
+
+    /// A subscribe future dropped before its response (a lost `select!` branch)
+    /// must terminate its stream on the core and leave nothing registered.
+    #[tokio::test]
+    async fn cancelled_subscribe_tears_its_stream_down() {
+        let (_dir, path, mut core) = fake_core(false).await;
+        let client = client(path).await;
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(100),
+            client.subscribe_to_iot_core(request()),
+        )
+        .await;
+        assert!(cancelled.is_err(), "the fake core never answers");
+
+        let subscribe = next(&mut core).await;
+        let terminate = next(&mut core).await;
+        assert_eq!(stream_id(&terminate), stream_id(&subscribe));
+        assert_eq!(flags(&terminate) & 2, 2, "TERMINATE_STREAM flag");
+        assert_eq!(client.connection.registered_stream_count().await, (0, 0, 0));
+    }
+
+    /// The operation-timeout path goes through the same teardown.
+    #[tokio::test]
+    async fn timed_out_subscribe_tears_its_stream_down() {
+        let (_dir, path, mut core) = fake_core(false).await;
+        let mut client = client(path).await;
+        client.set_operation_timeout(Duration::from_millis(100));
+
+        let err = client.subscribe_to_iot_core(request()).await.err();
+        assert!(matches!(err, Some(Error::OperationTimeout)), "{err:?}");
+
+        let subscribe = next(&mut core).await;
+        let terminate = next(&mut core).await;
+        assert_eq!(stream_id(&terminate), stream_id(&subscribe));
+        assert_eq!(flags(&terminate) & 2, 2, "TERMINATE_STREAM flag");
+        assert_eq!(client.connection.registered_stream_count().await, (0, 0, 0));
+    }
+
+    /// A completed subscription keeps its stream until the caller drops it.
+    #[tokio::test]
+    async fn completed_subscribe_keeps_its_stream_until_dropped() {
+        let (_dir, path, mut core) = fake_core(true).await;
+        let client = client(path).await;
+
+        let sub = client.subscribe_to_iot_core(request()).await.unwrap();
+        let subscribe = next(&mut core).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(core.try_recv().is_err(), "no TERMINATE_STREAM while held");
+        assert_eq!(client.connection.registered_stream_count().await, (1, 1, 0));
+
+        drop(sub);
+        let terminate = next(&mut core).await;
+        assert_eq!(stream_id(&terminate), stream_id(&subscribe));
+        assert_eq!(flags(&terminate) & 2, 2, "TERMINATE_STREAM flag");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(client.connection.registered_stream_count().await, (0, 0, 0));
     }
 }
