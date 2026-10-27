@@ -19,7 +19,9 @@ pub mod model;
 
 pub use client::{GreengrassCoreIPCClient, StreamOperation};
 pub use error::{Error, Result};
-pub use iot_core::{DEFAULT_RESUBSCRIBE_HOLD, DEFAULT_STREAM_LIMIT, IoTCoreSubscription};
+pub use iot_core::{
+    DEFAULT_RESUBSCRIBE_HOLD, DEFAULT_STARTUP_HOLD, DEFAULT_STREAM_LIMIT, IoTCoreSubscription,
+};
 pub use lifecycle::{ConnectionError, LifecycleHandler};
 pub use model::{
     BinaryMessage, ComponentDetails, ComponentState, ConfigurationUpdateEvent,

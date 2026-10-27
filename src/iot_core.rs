@@ -15,6 +15,13 @@
 //!   Terminating a subscribe whose SUBACK is still pending leaves an orphaned
 //!   cloud subscription instead.
 //!
+//! The window also spans processes. When a component restarts, the core
+//! unsubscribes the old process's topics as its IPC connection closes, and a
+//! new process that subscribes to the same topics within milliseconds strands
+//! them. The client cannot see that the old process existed, so every pool
+//! waits [`DEFAULT_STARTUP_HOLD`] after connecting before its first subscribe
+//! reaches the core.
+//!
 //! So a client must not tie IPC streams to its own subscribe/unsubscribe
 //! cycles. The pool keeps one IPC stream per topic filter per connection and
 //! fans each message out to every local subscriber:
@@ -59,6 +66,12 @@ pub const DEFAULT_STREAM_LIMIT: usize = 40;
 /// subscribed again. It only has to outlast the core's UNSUBACK round trip.
 pub const DEFAULT_RESUBSCRIBE_HOLD: Duration = Duration::from_secs(30);
 
+/// Default time after connecting before the first subscribe reaches the core,
+/// so the UNSUBACKs for a restarted predecessor's topics have landed. Measured
+/// on nucleus 2.16.0 over WiFi: subscribes 4 ms after connecting stranded,
+/// holds of 1 s and more did not; the margin is for cellular round trips.
+pub const DEFAULT_STARTUP_HOLD: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 enum Status {
     Opening,
@@ -91,6 +104,9 @@ pub(crate) struct IoTCorePool {
     held: Mutex<HashMap<String, Instant>>,
     stream_limit: AtomicUsize,
     resubscribe_hold: Mutex<Duration>,
+    /// When the pool's connection was opened; the startup hold runs from here.
+    connected_at: Instant,
+    startup_hold: Mutex<Duration>,
     next_subscriber: AtomicU64,
 }
 
@@ -102,6 +118,8 @@ impl IoTCorePool {
             held: Mutex::new(HashMap::new()),
             stream_limit: AtomicUsize::new(DEFAULT_STREAM_LIMIT),
             resubscribe_hold: Mutex::new(DEFAULT_RESUBSCRIBE_HOLD),
+            connected_at: Instant::now(),
+            startup_hold: Mutex::new(DEFAULT_STARTUP_HOLD),
             next_subscriber: AtomicU64::new(0),
         })
     }
@@ -112,6 +130,10 @@ impl IoTCorePool {
 
     pub(crate) fn set_resubscribe_hold(&self, hold: Duration) {
         *self.resubscribe_hold.lock().unwrap() = hold;
+    }
+
+    pub(crate) fn set_startup_hold(&self, hold: Duration) {
+        *self.startup_hold.lock().unwrap() = hold;
     }
 
     pub(crate) fn stream_count(&self) -> usize {
@@ -202,8 +224,12 @@ impl IoTCorePool {
         let connection = self.connection.clone();
         let pool = Arc::downgrade(self);
         let task_slot = slot.clone();
+        let ready_at = self.connected_at + *self.startup_hold.lock().unwrap();
         let handle = tokio::spawn(async move {
             let slot = task_slot;
+            // Inside the task, like the subscribe itself: a caller that gives up
+            // during the hold does not cancel it.
+            tokio::time::sleep(ready_at.saturating_duration_since(Instant::now())).await;
             // No timeout: callers bound their own wait, and abandoning a
             // pending subscribe would orphan its cloud subscription.
             let opened: Result<StreamOperation<IoTCoreMessage>> = open_stream(

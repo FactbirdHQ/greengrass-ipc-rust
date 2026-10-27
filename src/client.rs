@@ -55,6 +55,14 @@ impl GreengrassCoreIPCClient {
         self.iot_core.set_resubscribe_hold(hold);
     }
 
+    /// How long after connecting the first IoT Core subscribe waits before it
+    /// reaches the core (default
+    /// [`DEFAULT_STARTUP_HOLD`](crate::DEFAULT_STARTUP_HOLD)). Subscribes count
+    /// against the operation timeout while they wait.
+    pub fn set_iot_core_startup_hold(&self, hold: Duration) {
+        self.iot_core.set_startup_hold(hold);
+    }
+
     /// IoT Core streams currently open or opening on this client.
     pub fn iot_core_stream_count(&self) -> usize {
         self.iot_core.stream_count()

@@ -13,6 +13,12 @@ const B: &str = "$aws/things/t/shadow/name/network/get/accepted";
 const C: &str = "$aws/things/t/jobs/notify-next";
 
 async fn client(core: &FakeCore) -> GreengrassCoreIPCClient {
+    let client = connect(core).await;
+    client.set_iot_core_startup_hold(Duration::ZERO);
+    client
+}
+
+async fn connect(core: &FakeCore) -> GreengrassCoreIPCClient {
     GreengrassCoreIPCClient::connect_with_options(
         Some(core.path.clone()),
         Some("token".into()),
@@ -198,6 +204,51 @@ async fn idle_streams_close_only_over_the_limit() {
         "A was held back after its close"
     );
     assert_eq!(core.subscribes(A), 2);
+}
+
+/// The first subscribe after connecting waits out the startup hold before it
+/// reaches the core; once the hold has passed, subscribes go out at once.
+#[tokio::test]
+async fn first_subscribe_waits_out_the_startup_hold() {
+    let core = FakeCore::start().await;
+    let client = connect(&core).await;
+    client.set_iot_core_startup_hold(Duration::from_millis(300));
+
+    let started = tokio::time::Instant::now();
+    let pending = client.subscribe_to_iot_core(request(A));
+    let early = async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        core.subscribes(A)
+    };
+    let (sub, seen_early) = tokio::join!(pending, early);
+    sub.unwrap();
+    assert_eq!(seen_early, 0, "subscribe reached the core inside the hold");
+    assert!(started.elapsed() >= Duration::from_millis(250));
+
+    let started = tokio::time::Instant::now();
+    client.subscribe_to_iot_core(request(B)).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "no hold after it passed"
+    );
+}
+
+/// The default hold applies to a client that does not configure one, and a
+/// caller giving up during it does not cancel the subscribe.
+#[tokio::test]
+async fn subscribe_abandoned_during_the_startup_hold_goes_on() {
+    let core = FakeCore::start().await;
+    let mut client = connect(&core).await;
+    client.set_operation_timeout(Duration::from_millis(100));
+
+    let err = client.subscribe_to_iot_core(request(A)).await.err();
+    assert!(matches!(err, Some(Error::OperationTimeout)), "{err:?}");
+    assert_eq!(core.subscribes(A), 0);
+
+    client.set_operation_timeout(Duration::from_secs(5));
+    client.subscribe_to_iot_core(request(A)).await.unwrap();
+    assert_eq!(core.subscribes(A), 1, "joined, not resubscribed");
+    assert!(core.terminates().is_empty());
 }
 
 /// Streams in use are never closed, even over the limit.
